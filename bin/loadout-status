@@ -1,0 +1,109 @@
+#!/bin/bash
+# Emit the current install state as one JSON object, for jgarza.loadout.
+#
+#   { "explicit": [pkg…],           # pacman -Qqe
+#     "foreign":  [pkg…],           # pacman -Qqm  (AUR / foreign)
+#     "apps":     [pkg…],           # explicit pkgs that ship a visible .desktop launcher
+#     "flatpak":  [app-id…],        # flatpak list --app --columns=application
+#     "plugins":  [ … ],            # verbatim `omarchy plugin list --json`
+#     "hyprpm":   [ { "repo": name, "plugins": [ {"name","enabled"} … ] } … ] }
+#
+# Read-only. No sudo. Safe to poll.
+
+set -uo pipefail
+
+lines_to_json() { jq -R -s 'split("\n") | map(select(length > 0))'; }
+
+mapfile -t _explicit < <(pacman -Qqe 2>/dev/null)
+explicit="$(printf '%s\n' "${_explicit[@]}" | lines_to_json)"
+foreign="$(pacman -Qqm 2>/dev/null | lines_to_json)"
+
+# "apps": the explicitly-installed packages that a user would recognise as an
+# application — they own at least one launcher in /usr/share/applications that is
+# not NoDisplay/Hidden. One `pacman -Ql` pass (which prints "pkg /path"), then a
+# cheap grep per candidate .desktop file. Excludes libraries, toolchains, base.
+if ((${#_explicit[@]})); then
+  apps="$(
+    pacman -Ql "${_explicit[@]}" 2>/dev/null \
+      | awk '$2 ~ /^\/usr\/share\/applications\/[^\/]+\.desktop$/ { print $1 "\t" $2 }' \
+      | while IFS=$'\t' read -r pkg path; do
+          [ -r "$path" ] || continue
+          grep -qiE '^(NoDisplay|Hidden)[[:space:]]*=[[:space:]]*true' "$path" && continue
+          printf '%s\n' "$pkg"
+        done \
+      | sort -u | lines_to_json
+  )"
+else
+  apps="[]"
+fi
+case "$apps" in \[*) : ;; *) apps="[]" ;; esac
+
+if command -v flatpak >/dev/null 2>&1; then
+  flatpak="$(flatpak list --app --columns=application 2>/dev/null | lines_to_json)"
+else
+  flatpak="[]"
+fi
+case "$flatpak" in \[*) : ;; *) flatpak="[]" ;; esac
+
+plugins="$(omarchy plugin list --json 2>/dev/null)"
+case "$plugins" in
+  \[*) : ;;
+  *) plugins="[]" ;;
+esac
+
+# `hyprpm list` is human-formatted and ANSI-coloured. Strip escapes, then walk:
+#   → Repository <repo> (by …):
+#     │ Plugin <name>
+#     └─ enabled: <true|false>
+hyprpm="$(
+  hyprpm list 2>/dev/null \
+    | sed -r 's/\x1b\[[0-9;]*m//g' \
+    | awk '
+        function flush() {
+          if (repo != "") {
+            entries = entries (entries == "" ? "" : ",") \
+              "{\"repo\":\"" repo "\",\"plugins\":[" plugins "]}"
+          }
+          repo = ""; plugins = ""
+        }
+        /Repository[ \t]+[^ \t]/ {
+          flush()
+          line = $0
+          sub(/.*Repository[ \t]+/, "", line)
+          sub(/[ \t]*\(by.*$/, "", line)
+          sub(/:[ \t]*$/, "", line)
+          gsub(/[ \t]+$/, "", line)
+          repo = line
+          next
+        }
+        /Plugin[ \t]+[^ \t]/ {
+          pname = $0
+          sub(/.*Plugin[ \t]+/, "", pname)
+          gsub(/[ \t]+$/, "", pname)
+          next
+        }
+        /enabled:[ \t]*(true|false)/ {
+          en = ($0 ~ /true/) ? "true" : "false"
+          if (pname != "") {
+            plugins = plugins (plugins == "" ? "" : ",") \
+              "{\"name\":\"" pname "\",\"enabled\":" en "}"
+            pname = ""
+          }
+          next
+        }
+        END { flush(); print "[" entries "]" }
+      '
+)"
+case "$hyprpm" in
+  \[*) : ;;
+  *) hyprpm="[]" ;;
+esac
+
+jq -nc \
+  --argjson explicit "${explicit:-[]}" \
+  --argjson foreign "${foreign:-[]}" \
+  --argjson apps "${apps:-[]}" \
+  --argjson flatpak "${flatpak:-[]}" \
+  --argjson plugins "${plugins:-[]}" \
+  --argjson hyprpm "${hyprpm:-[]}" \
+  '{explicit: $explicit, foreign: $foreign, apps: $apps, flatpak: $flatpak, plugins: $plugins, hyprpm: $hyprpm}'

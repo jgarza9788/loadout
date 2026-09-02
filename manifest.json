@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "jgarza.loadout",
+  "name": "Loadout",
+  "version": "1.0.0",
+  "author": "jgarza",
+  "license": "MIT",
+  "description": "One table for everything you install: pacman and AUR programs, Omarchy shell plugins, and Hyprland plugins. Curate a loadout you own, then add or remove rows in bulk. Removing uninstalls but keeps the row so you can re-add it later.",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Loadout.qml"
+  }
+}

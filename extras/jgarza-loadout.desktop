@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Loadout
+Comment=Bulk add/remove programs, Omarchy plugins, and Hyprland plugins
+Exec=sh -c 'omarchy-shell shell toggle jgarza.loadout "{}"'
+Icon=preferences-desktop-apps
+Terminal=false
+Categories=System;Settings;
+Keywords=packages;plugins;install;pacman;aur;hyprpm;

@@ -1,0 +1,20 @@
+[
+  { "name": "btop", "description": "Resource monitor with a mouse-driven TUI", "type": "pacman", "ref": "btop", "link": "https://github.com/aristocratos/btop" },
+  { "name": "ripgrep", "description": "Fast recursive search (rg)", "type": "pacman", "ref": "ripgrep", "link": "https://github.com/BurntSushi/ripgrep" },
+  { "name": "fd", "description": "Simple, fast alternative to find", "type": "pacman", "ref": "fd", "link": "https://github.com/sharkdp/fd" },
+  { "name": "fzf", "description": "Command-line fuzzy finder", "type": "pacman", "ref": "fzf", "link": "https://github.com/junegunn/fzf" },
+  { "name": "bat", "description": "cat clone with syntax highlighting", "type": "pacman", "ref": "bat", "link": "https://github.com/sharkdp/bat" },
+  { "name": "eza", "description": "Modern replacement for ls", "type": "pacman", "ref": "eza", "link": "https://github.com/eza-community/eza" },
+  { "name": "zoxide", "description": "Smarter cd that learns your habits", "type": "pacman", "ref": "zoxide", "link": "https://github.com/ajeetdsouza/zoxide" },
+  { "name": "tealdeer", "description": "Fast tldr client (tldr)", "type": "pacman", "ref": "tealdeer", "link": "https://github.com/tealdeer-rs/tealdeer" },
+
+  { "name": "yay", "description": "AUR helper", "type": "aur", "ref": "yay", "link": "https://github.com/Jguer/yay" },
+
+  { "name": "Mission Center", "description": "System monitor (Task-Manager style)", "type": "flatpak", "ref": "io.missioncenter.MissionCenter", "link": "https://missioncenter.io" },
+
+  { "name": "Notification Center", "description": "History + do-not-disturb panel for Omarchy", "type": "omarchy", "ref": "https://github.com/jankeesvw/omarchy-notification-center.git", "id": "jankeesvw.notification-center", "link": "https://github.com/jankeesvw/omarchy-notification-center" },
+  { "name": "Theme Manager", "description": "Browse and install Omarchy themes", "type": "omarchy", "ref": "https://github.com/mtolhuys/omarchy-theme-manager.git", "id": "io.github.mtolhuys.theme-manager", "link": "https://github.com/mtolhuys/omarchy-theme-manager" },
+  { "name": "Dock", "description": "macOS-style dock for Omarchy", "type": "omarchy", "ref": "https://github.com/rosakodu/omarchy-dock.git", "id": "rosakodu.dock", "link": "https://github.com/rosakodu/omarchy-dock" },
+
+  { "name": "Scroll Overview", "description": "niri-style zoom-out for the Hyprland scrolling layout", "type": "hyprland", "ref": "https://github.com/yayuuu/hyprland-scroll-overview", "id": "scrolloverview", "link": "https://github.com/yayuuu/hyprland-scroll-overview" }
+]

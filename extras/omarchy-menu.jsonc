@@ -1,0 +1,12 @@
+{
+  // Adds a top-level "Loadout" row to the Omarchy menu (SUPER+SPACE), next to
+  // Install / Remove / Update. Merge into
+  // ~/.config/omarchy/extensions/omarchy-menu.jsonc — extras/install.sh does this.
+  "loadout": {
+    "icon": "󰏗",
+    "label": "Loadout",
+    "aliases": ["loadout", "packages", "package manager", "plugins"],
+    "description": "Bulk add/remove your kit: programs, Omarchy plugins, Hyprland plugins",
+    "action": "omarchy-shell shell toggle jgarza.loadout '{}'"
+  }
+}
