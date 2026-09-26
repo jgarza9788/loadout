@@ -145,19 +145,37 @@ is a separate action in the row editor (double-click a row, or **＋ New**).
 
 ### Keyboard
 
+Everything works without a mouse. Press `?` in the panel for this list.
+
 | | |
 |---|---|
 | `j` / `k` / `↑` `↓` | move the row cursor |
-| `g` / `G` / `Home` `End` / `PgUp` `PgDn` | jump |
+| `g` / `G` / `Home` `End` | first / last row |
+| `Ctrl+D` / `Ctrl+U` · `PgDn` / `PgUp` | half page · ten rows |
 | `space` | select / deselect the cursor row |
-| `⏎` | edit the cursor row |
+| `J` / `K` / `Shift+↑` `↓` | extend the selection while moving |
+| `Ctrl+A` · `c` | select all shown · clear selection |
 | `a` / `d` (or `x`) | add / remove the cursor row |
 | `A` / `D` | add / remove **selected** (bulk) |
-| `o` | open the cursor row's link |
-| `n` | new entry &nbsp;·&nbsp; `r` refresh &nbsp;·&nbsp; `i` installed-only &nbsp;·&nbsp; `c` clear selection |
-| `1`–`6` | filter: All / Programs / AUR / Flatpak / Omarchy / Hyprland |
-| `/` or `Ctrl+F` | search &nbsp;·&nbsp; `Ctrl+A` select all &nbsp;·&nbsp; `Esc` back out / close |
-| `Tab` / `Shift+Tab` | move focus between the controls (header, filters, search, action bar, table) |
+| `⏎` or `e` · `n` | edit the cursor row · new row |
+| `Delete` twice | drop the cursor row from the loadout (doesn't uninstall) |
+| `h` / `l` / `←` `→` · `1`–`6` | previous / next type filter · jump to a filter |
+| `i` | installed only |
+| `/` or `Ctrl+F` | search; `⏎` or `↓` jumps into the results, `Esc` clears then leaves |
+| `o` · `r` / `Ctrl+R` | open the row's link · refresh status |
+| `Tab` / `Shift+Tab` | move focus between controls; `⏎` / `space` press the focused button |
+| `Esc` · `q` | back one step (sheet → pending delete → search → close) · close |
+| `?` | shortcut sheet |
+
+In the row editor:
+
+| | |
+|---|---|
+| `Tab` / `Shift+Tab` / `↑` `↓` | move between every field and button |
+| `Ctrl+1`–`5` · `←` `→` on a type | pick the type |
+| `⏎` in a field · `Ctrl+S` | save |
+| `Ctrl+Delete` twice | delete the entry |
+| `Esc` | cancel |
 
 ## Files
 

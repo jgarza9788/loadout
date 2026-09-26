@@ -72,6 +72,9 @@ Item {
   property int cursorIndex: 0
 
   property string toastText: ""
+  property bool helpOpen: false
+
+  readonly property var filterTypes: ["all", "pacman", "aur", "flatpak", "omarchy", "hyprland"]
 
   // Job tracking: keys of rows a launched command touches, and their installed
   // state at launch time so a status refresh can clear `busy` as soon as it flips.
@@ -421,6 +424,55 @@ Item {
     var r = rowAtCursor();
     if (r) toggleSel(rowKey(r));
   }
+  // Shift+↓/↑ (or J/K): select the cursor row, then move and select the next —
+  // a keyboard range select.
+  function extendSelection(delta) {
+    if (listModel.count === 0) return;
+    var next = {};
+    for (var k in root.selectedKeys) next[k] = root.selectedKeys[k];
+    var from = listModel.get(root.cursorIndex);
+    if (from) next[from.key] = true;
+    root.cursorIndex = Math.max(0, Math.min(root.cursorIndex + delta, listModel.count - 1));
+    var to = listModel.get(root.cursorIndex);
+    if (to) next[to.key] = true;
+    root.selectedKeys = next;
+    syncModelSelection();
+    table.ensureCursorVisible();
+  }
+  function cycleFilter(delta) {
+    var i = root.filterTypes.indexOf(root.filterType);
+    root.filterType = root.filterTypes[(i + delta + root.filterTypes.length) % root.filterTypes.length];
+  }
+  function halfPage() { return Math.max(1, Math.floor(table.height / 42 / 2)); }
+
+  // Delete key: drop the cursor row from the catalog (not an uninstall).
+  // Two-step so a stray key can't lose a row.
+  property string pendingDeleteKey: ""
+  Timer { id: deleteConfirmTimer; interval: 3000; onTriggered: root.pendingDeleteKey = "" }
+  function cursorDelete() {
+    var r = rowAtCursor();
+    if (!r) return;
+    var k = rowKey(r);
+    if (root.pendingDeleteKey === k) {
+      root.pendingDeleteKey = "";
+      deleteConfirmTimer.stop();
+      deleteRow(r);
+      toast("Removed \u201c" + r.name + "\u201d from the loadout");
+      return;
+    }
+    root.pendingDeleteKey = k;
+    deleteConfirmTimer.restart();
+    toast("Press Delete again to drop \u201c" + r.name + "\u201d from the loadout" +
+          (r.installed ? " (stays installed)" : ""));
+  }
+
+  // Esc peels back one layer at a time: help → pending delete → search text → close.
+  function backOut() {
+    if (root.helpOpen) { root.helpOpen = false; return; }
+    if (root.pendingDeleteKey) { root.pendingDeleteKey = ""; toast("Cancelled"); return; }
+    if (root.query) { root.query = ""; return; }
+    root.dismiss();
+  }
   function cursorEdit() {
     var r = rowAtCursor();
     if (r) editRow(r);
@@ -624,6 +676,8 @@ Item {
     root.query = "";
     root.installedOnly = false;
     root.selectedKeys = ({});
+    root.helpOpen = false;
+    root.pendingDeleteKey = "";
     if (root.catalogReady) { rebuild(); refreshStatus(); }
     Qt.callLater(function () { keyCatcher.forceActiveFocus(); });
   }
@@ -694,11 +748,16 @@ Item {
         var isTab = event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab;
         var back = event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) !== 0;
 
-        // The row editor owns the keyboard; let Tab navigate its own fields
-        // and buttons, and Escape backs out.
+        // The row editor owns the keyboard (its own focus ring + shortcuts).
         if (rowEditor.opened) {
-          if (isTab) { event.accepted = false; return; }
-          if (event.key === Qt.Key_Escape) { rowEditor.opened = false; event.accepted = true; }
+          if (rowEditor.handleKey(event)) event.accepted = true;
+          return;
+        }
+
+        // The shortcut sheet is modal: ? / Esc / q close it.
+        if (root.helpOpen) {
+          if (event.key === Qt.Key_Escape || event.text === "?" || event.text === "q") root.helpOpen = false;
+          event.accepted = true;
           return;
         }
 
@@ -710,26 +769,37 @@ Item {
 
         // While typing in search, Escape is the only shortcut (back to the list).
         if (searchField.activeFocus) {
-          if (event.key === Qt.Key_Escape) { keyCatcher.forceActiveFocus(); event.accepted = true; }
+          if (event.key === Qt.Key_Escape) { table.forceActiveFocus(); event.accepted = true; }
           return;
         }
 
+        var shift = (event.modifiers & Qt.ShiftModifier) !== 0;
         if (ctrl && event.key === Qt.Key_F) { searchField.forceActiveFocus(); event.accepted = true; return; }
         if (ctrl && event.key === Qt.Key_A) { root.selectAllVisible(); event.accepted = true; return; }
+        if (ctrl && event.key === Qt.Key_D) { root.moveCursor(root.halfPage()); event.accepted = true; return; }
+        if (ctrl && event.key === Qt.Key_U) { root.moveCursor(-root.halfPage()); event.accepted = true; return; }
+        if (ctrl && event.key === Qt.Key_R) { root.refreshStatus(true); event.accepted = true; return; }
         if (ctrl) return;
+
+        // A focused button takes ←/→ and ⏎/space itself; only the list and the
+        // bare panel get the table bindings for those.
+        var onButton = !table.activeFocus && !keyCatcher.activeFocus;
 
         var handled = true;
         switch (event.key) {
-        case Qt.Key_Escape:   root.dismiss(); break;
-        case Qt.Key_Down:     root.moveCursor(1); break;
-        case Qt.Key_Up:       root.moveCursor(-1); break;
+        case Qt.Key_Escape:   root.backOut(); break;
+        case Qt.Key_Down:     if (shift) root.extendSelection(1); else root.moveCursor(1); break;
+        case Qt.Key_Up:       if (shift) root.extendSelection(-1); else root.moveCursor(-1); break;
+        case Qt.Key_Left:     root.cycleFilter(-1); break;
+        case Qt.Key_Right:    root.cycleFilter(1); break;
+        case Qt.Key_Delete:   root.cursorDelete(); break;
         case Qt.Key_PageDown: root.moveCursor(10); break;
         case Qt.Key_PageUp:   root.moveCursor(-10); break;
         case Qt.Key_Home:     root.setCursor(0); break;
         case Qt.Key_End:      root.setCursor(listModel.count - 1); break;
-        case Qt.Key_Space:    root.cursorToggleSel(); break;
+        case Qt.Key_Space:    if (onButton) handled = false; else root.cursorToggleSel(); break;
         case Qt.Key_Return:
-        case Qt.Key_Enter:    root.cursorEdit(); break;
+        case Qt.Key_Enter:    if (onButton) handled = false; else root.cursorEdit(); break;
         default:              handled = false;
         }
 
@@ -738,6 +808,13 @@ Item {
           handled = true;
           if (t === "j") root.moveCursor(1);
           else if (t === "k") root.moveCursor(-1);
+          else if (t === "J") root.extendSelection(1);
+          else if (t === "K") root.extendSelection(-1);
+          else if (t === "h") root.cycleFilter(-1);
+          else if (t === "l") root.cycleFilter(1);
+          else if (t === "e") root.cursorEdit();
+          else if (t === "?") root.helpOpen = true;
+          else if (t === "q") root.dismiss();
           else if (t === "g") root.setCursor(0);
           else if (t === "G") root.setCursor(listModel.count - 1);
           else if (t === "/") searchField.forceActiveFocus();
@@ -751,7 +828,7 @@ Item {
           else if (t === "D" || t === "X" || t === "R") root.runBulk("remove");
           else if (t === "c") root.clearSelection();
           else if (t.length === 1 && t >= "1" && t <= "6")
-            root.filterType = ["all", "pacman", "aur", "flatpak", "omarchy", "hyprland"][parseInt(t, 10) - 1];
+            root.filterType = root.filterTypes[parseInt(t, 10) - 1];
           else handled = false;
         }
         event.accepted = handled;
@@ -879,7 +956,15 @@ Item {
                 // (handled here because a focused TextField consumes the key
                 // before it can reach the panel's key catcher).
                 if (e.key === Qt.Key_Escape) {
-                  keyCatcher.forceActiveFocus();
+                  // First Esc clears the text, second leaves the field.
+                  if (searchField.text.length > 0) root.query = "";
+                  else table.forceActiveFocus();
+                  e.accepted = true;
+                } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter ||
+                           e.key === Qt.Key_Down || e.key === Qt.Key_Up) {
+                  // Jump into the filtered results, keeping the query.
+                  root.setCursor(0);
+                  table.forceActiveFocus();
                   e.accepted = true;
                 } else if (e.key === Qt.Key_Tab || e.key === Qt.Key_Backtab) {
                   root.focusStep((e.key === Qt.Key_Backtab || (e.modifiers & Qt.ShiftModifier)) ? -1 : 1);
@@ -961,8 +1046,8 @@ Item {
           Text {
             id: footer
             width: parent.width
-            text: "tab focus controls · j/k move · space select · ⏎ edit · a add · d remove · o link · / search · " +
-              "n new · r refresh · i installed-only · 1–6 filter · A/D bulk · esc close"
+            text: "? all shortcuts · j/k move · J/K range-select · space select · h/l filter · / search · " +
+              "a/d add/remove · A/D bulk · ⏎ edit · n new · del drop row · esc back"
             color: Util.alpha(Color.foreground, 0.4)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -987,6 +1072,127 @@ Item {
             color: Color.background
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
+          }
+        }
+      }
+
+      // ── Shortcut sheet (?) ──────────────────────────────────────
+      Rectangle {
+        anchors.fill: parent
+        z: 30
+        visible: root.helpOpen
+        color: Util.alpha(Color.background, 0.6)
+        MouseArea { anchors.fill: parent; onClicked: root.helpOpen = false }
+
+        Rectangle {
+          anchors.centerIn: parent
+          width: Math.min(760, parent.width * 0.86)
+          height: helpCol.implicitHeight + Style.space(36)
+          radius: Math.max(8, Style.cornerRadius)
+          color: Color.background
+          border.width: 1
+          border.color: Util.alpha(Color.foreground, 0.16)
+          MouseArea { anchors.fill: parent; onClicked: {} }
+
+          Column {
+            id: helpCol
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(18) }
+            spacing: Style.space(10)
+
+            Text {
+              text: "KEYBOARD SHORTCUTS"
+              color: Color.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.4
+            }
+
+            Grid {
+              width: parent.width
+              columns: 2
+              columnSpacing: Style.space(24)
+              rowSpacing: Style.space(10)
+              Repeater {
+                model: [
+                  { title: "Move", keys: [
+                    ["j k  ↑ ↓", "row up / down"],
+                    ["g G  Home End", "first / last row"],
+                    ["Ctrl+D  Ctrl+U", "half page down / up"],
+                    ["PgDn PgUp", "ten rows"] ] },
+                  { title: "Select", keys: [
+                    ["space", "toggle the cursor row"],
+                    ["J K  Shift+↑↓", "extend selection"],
+                    ["Ctrl+A", "select / unselect all shown"],
+                    ["c", "clear selection"] ] },
+                  { title: "Act", keys: [
+                    ["a  d", "add / remove the cursor row"],
+                    ["A  D", "add / remove selected"],
+                    ["o", "open the row's link"],
+                    ["r  Ctrl+R", "refresh status"] ] },
+                  { title: "Edit", keys: [
+                    ["⏎  e", "edit the cursor row"],
+                    ["n", "new row"],
+                    ["Delete ×2", "drop row from loadout"],
+                    ["in the editor", "Tab / ↑↓ fields, Ctrl+1–5 type, Ctrl+S save"] ] },
+                  { title: "Filter", keys: [
+                    ["h l  ← →", "previous / next type"],
+                    ["1 – 6", "jump to a type tab"],
+                    ["i", "installed only"],
+                    ["/  Ctrl+F", "search (⏎ or ↓ jumps to results)"] ] },
+                  { title: "Panel", keys: [
+                    ["Tab  Shift+Tab", "move between controls"],
+                    ["Esc", "back one step (search → close)"],
+                    ["q", "close"],
+                    ["?", "this sheet"] ] }
+                ]
+                delegate: Column {
+                  required property var modelData
+                  width: (helpCol.width - Style.space(24)) / 2
+                  spacing: 3
+                  Text {
+                    text: modelData.title
+                    color: Util.alpha(Color.foreground, 0.55)
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+                  Repeater {
+                    model: modelData.keys
+                    delegate: Row {
+                      id: helpRow
+                      required property var modelData
+                      width: parent.width
+                      spacing: Style.space(10)
+                      Text {
+                        id: helpKey
+                        width: Style.space(120)
+                        text: modelData[0]
+                        color: Color.accent
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                      }
+                      Text {
+                        width: helpRow.width - helpKey.width - helpRow.spacing
+                        text: modelData[1]
+                        wrapMode: Text.Wrap
+                        color: Color.foreground
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            Text {
+              text: "? or Esc to close"
+              color: Util.alpha(Color.foreground, 0.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
           }
         }
       }
