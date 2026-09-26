@@ -1,0 +1,198 @@
+#!/usr/bin/python3 -IS
+# Bounded, no-follow persistence for jgarza.loadout's catalog.json.
+#
+#   loadout-catalog read  <path>    print the catalog (a JSON array), or [] if absent
+#   loadout-catalog write <path>    replace it atomically with the JSON array on stdin
+#
+# The catalog lives at a predictable, user-writable path, so every access goes
+# through one descriptor opened O_NOFOLLOW|O_NONBLOCK and is checked with fstat
+# on that same descriptor: a regular file, owned by us, not group/world
+# writable, at most MAX_BYTES. The parent directory is held open the same way
+# (and created 0700 if missing), and all file operations are relative to it, so
+# neither component can be swapped for a symlink mid-operation. Writes go to an
+# O_EXCL temp file in that directory, keep the existing file's mode, are
+# fsync'd, then renamed over the target.
+#
+# On any violation: prints {"error": "..."} to stdout and exits 2. Never
+# follows, truncates, or rewrites a rejected file.
+
+import json
+import os
+import stat
+import sys
+
+MAX_BYTES = 1024 * 1024
+UID = os.getuid()
+
+
+class Reject(Exception):
+    pass
+
+
+def check_owned(st, what, want):
+    if not want(st.st_mode):
+        raise Reject(what + " is not a regular " + ("directory" if want is stat.S_ISDIR else "file"))
+    if st.st_uid != UID:
+        raise Reject(what + " is not owned by you")
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise Reject(what + " is group/world writable")
+
+
+def open_dir(path):
+    """Open the catalog's directory without following a symlink, creating it 0700."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        parent = os.path.dirname(path)
+        try:
+            os.makedirs(parent, mode=0o700, exist_ok=True)
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            pass
+        except OSError as e:
+            raise Reject("cannot create " + path + ": " + e.strerror)
+        try:
+            fd = os.open(path, flags)
+        except OSError as e:
+            raise Reject("cannot open " + path + ": " + e.strerror)
+    except OSError as e:
+        # ELOOP / ENOTDIR: the directory itself is a symlink or not a directory.
+        raise Reject("cannot open " + path + ": " + e.strerror)
+    try:
+        check_owned(os.fstat(fd), "config directory", stat.S_ISDIR)
+    except Reject:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_existing(dirfd, name):
+    """Return (fd, stat) for the catalog, or (None, None) when it does not exist."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOCTTY
+    try:
+        fd = os.open(name, flags, dir_fd=dirfd)
+    except FileNotFoundError:
+        return None, None
+    except OSError as e:
+        raise Reject("cannot open catalog: " + e.strerror)
+    try:
+        st = os.fstat(fd)
+        check_owned(st, "catalog", stat.S_ISREG)
+        if st.st_size > MAX_BYTES:
+            raise Reject("catalog is larger than %d bytes" % MAX_BYTES)
+    except Reject:
+        os.close(fd)
+        raise
+    return fd, st
+
+
+def read_bounded(fd):
+    chunks, total = [], 0
+    while True:
+        b = os.read(fd, 65536)
+        if not b:
+            break
+        total += len(b)
+        if total > MAX_BYTES:
+            raise Reject("catalog is larger than %d bytes" % MAX_BYTES)
+        chunks.append(b)
+    return b"".join(chunks)
+
+
+def parse_array(data, what):
+    try:
+        value = json.loads(data.decode("utf-8")) if data.strip() else []
+    except (UnicodeDecodeError, ValueError):
+        raise Reject(what + " is not valid JSON")
+    if not isinstance(value, list):
+        raise Reject(what + " is not a JSON array")
+    return value
+
+
+def split(path):
+    path = os.path.abspath(path)
+    name = os.path.basename(path)
+    if not name or name in (".", ".."):
+        raise Reject("bad catalog path")
+    return os.path.dirname(path), name
+
+
+def cmd_read(path):
+    dirpath, name = split(path)
+    dirfd = open_dir(dirpath)
+    try:
+        fd, _ = open_existing(dirfd, name)
+        if fd is None:
+            return []
+        try:
+            return parse_array(read_bounded(fd), "catalog")
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dirfd)
+
+
+def cmd_write(path):
+    data = sys.stdin.buffer.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise Reject("new catalog is larger than %d bytes" % MAX_BYTES)
+    parse_array(data, "new catalog")
+
+    dirpath, name = split(path)
+    dirfd = open_dir(dirpath)
+    try:
+        fd, st = open_existing(dirfd, name)
+        mode = 0o600
+        if fd is not None:
+            mode = stat.S_IMODE(st.st_mode)
+            os.close(fd)
+
+        tmp = "." + name + ".%d.tmp" % os.getpid()
+        tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                      0o600, dir_fd=dirfd)
+        try:
+            view = memoryview(data)
+            while view:
+                n = os.write(tfd, view)
+                view = view[n:]
+            os.fchmod(tfd, mode)
+            os.fsync(tfd)
+            os.close(tfd)
+            tfd = -1
+            os.replace(tmp, name, src_dir_fd=dirfd, dst_dir_fd=dirfd)
+        except BaseException:
+            if tfd >= 0:
+                os.close(tfd)
+            try:
+                os.unlink(tmp, dir_fd=dirfd)
+            except OSError:
+                pass
+            raise
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
+
+
+def main(argv):
+    if len(argv) != 3 or argv[1] not in ("read", "write"):
+        sys.stderr.write("usage: loadout-catalog read|write <path>\n")
+        return 64
+    try:
+        if argv[1] == "read":
+            out = json.dumps(cmd_read(argv[2]))
+        else:
+            cmd_write(argv[2])
+            out = json.dumps({"ok": True})
+    except Reject as e:
+        sys.stdout.write(json.dumps({"error": str(e)}) + "\n")
+        return 2
+    except OSError as e:
+        sys.stdout.write(json.dumps({"error": (e.strerror or str(e))}) + "\n")
+        return 2
+    sys.stdout.write(out + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

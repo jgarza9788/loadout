@@ -1,5 +1,6 @@
 // Run: node tests/catalog.test.js
 const C = require("../Catalog.js");
+const B = C.BIN;
 
 let failed = 0;
 function ok(name, cond) {
@@ -94,7 +95,7 @@ eq("groupForRemove hyprland", gr.hyprland.length, 1);
 
 // ── buildCommand ────────────────────────────────────────────────────────────
 const addOne = C.buildCommand(C.groupByType([{ type: "pacman", ref: "cowsay lolcat" }]), "add");
-eq("add pacman single stage", addOne, "omarchy-pkg-add 'cowsay' 'lolcat'");
+eq("add pacman single stage", addOne, B.pkgAdd + " 'cowsay' 'lolcat'");
 
 const rmMixed = C.buildCommand(C.groupByType([
   { type: "pacman", ref: "cowsay" },
@@ -102,9 +103,9 @@ const rmMixed = C.buildCommand(C.groupByType([
   { type: "omarchy", ref: "https://x/nc.git", id: "auto.nc" },
   { type: "hyprland", ref: "https://github.com/yayuuu/hyprland-scroll-overview.git", id: "scrolloverview" }
 ]), "remove");
-ok("remove drops pacman+aur together: " + rmMixed, rmMixed.indexOf("omarchy-pkg-drop 'cowsay' 'yay'") === 0);
-ok("remove omarchy by id", rmMixed.indexOf("omarchy plugin remove 'auto.nc' --yes") !== -1);
-ok("remove hyprland by repo name (not id)", rmMixed.indexOf("hyprpm remove 'hyprland-scroll-overview'") !== -1);
+ok("remove drops pacman+aur together: " + rmMixed, rmMixed.indexOf(B.pkgDrop + " 'cowsay' 'yay'") === 0);
+ok("remove omarchy by id", rmMixed.indexOf(B.omarchy + " plugin remove 'auto.nc' --yes") !== -1);
+ok("remove hyprland by repo name (not id)", rmMixed.indexOf(B.hyprpm + " remove 'hyprland-scroll-overview'") !== -1);
 eq("remove appends exactly one hyprpm reload", rmMixed.split("hyprpm reload -n").length - 1, 1);
 ok("remove stages chained with &&", rmMixed.indexOf(" && ") !== -1);
 
@@ -114,14 +115,81 @@ const addMixed = C.buildCommand(C.groupByType([
   { type: "hyprland", ref: "https://h/two.git" }
 ]), "add");
 eq("add hyprland reload appended once for two repos", addMixed.split("hyprpm reload -n").length - 1, 1);
-ok("add hyprland enable only when id present", addMixed.indexOf("hyprpm enable 'onep'") !== -1);
-ok("add hyprland second repo has no enable", addMixed.indexOf("hyprpm add 'https://h/two.git' && hyprpm reload") !== -1);
+ok("add hyprland enable only when id present", addMixed.indexOf(B.hyprpm + " enable 'onep'") !== -1);
+ok("add hyprland second repo has no enable", addMixed.indexOf(B.hyprpm + " add 'https://h/two.git' && " + B.hyprpm + " reload") !== -1);
 
 eq("buildCommand empty groups -> empty string", C.buildCommand({}, "add"), "");
 
 // custom quote fn is used
 const q = (s) => '"' + s + '"';
-eq("buildCommand honors injected quote fn", C.buildCommand(C.groupByType([{ type: "pacman", ref: "x" }]), "add", q), 'omarchy-pkg-add "x"');
+eq("buildCommand honors injected quote fn", C.buildCommand(C.groupByType([{ type: "pacman", ref: "x" }]), "add", q), B.pkgAdd + ' "x"');
+
+
+// ── target grammar (argument / option injection) ─────────────────────────────
+const V = C.validTarget;
+["-x", "--config=/tmp/x", ".hidden", "", "a b", "a;b", "$(id)", "Foo", "x".repeat(200)].forEach(v =>
+  eq("pkg rejects " + JSON.stringify(v).slice(0, 30), V("pkg", v), false));
+["btop", "ripgrep", "libreoffice-fresh", "lib32-glibc", "gtk+", "python3.12", "@scope"].forEach(v =>
+  eq("pkg accepts " + v, V("pkg", v), true));
+["-org.x.Y", "--user", "org.x", "org..x.Y", "org.x.Y;", "1org.x.Y"].forEach(v =>
+  eq("flatpak rejects " + v, V("flatpak", v), false));
+["io.missioncenter.MissionCenter", "com.nvidia.geforcenow", "org.gnome.Calculator"].forEach(v =>
+  eq("flatpak accepts " + v, V("flatpak", v), true));
+["-rf", "--help", ".x", "a/b", "a b", ""].forEach(v =>
+  eq("name rejects " + JSON.stringify(v), V("name", v), false));
+["scrolloverview", "jankeesvw.notification-center", "io.github.mtolhuys.theme-manager"].forEach(v =>
+  eq("name accepts " + v, V("name", v), true));
+["http://github.com/a/b.git", "git://github.com/a/b.git", "file:///etc/passwd", "ext::sh -c id",
+ "--upload-pack=touch /tmp/x", "https://-x/a", "https://host", "https://h/a b", "https://h/a;b",
+ "ssh://git@h/a.git", "-https://h/a"].forEach(v =>
+  eq("url rejects " + v, V("url", v), false));
+["https://github.com/yayuuu/hyprland-scroll-overview", "https://github.com/rosakodu/omarchy-dock.git",
+ "git@github.com:foo/baz.git", "https://git.example.com:8443/a/b.git"].forEach(v =>
+  eq("url accepts " + v, V("url", v), true));
+
+// every shipped default row is well-formed
+require("../catalog.default.json").forEach(r =>
+  eq("default row valid: " + r.name, C.rowTargetError(r), ""));
+
+// rowTargetError reasons
+ok("rowTargetError pkg", /Invalid package/.test(C.rowTargetError({ type: "pacman", ref: "ok --noconfirm" })));
+ok("rowTargetError url", /Git URL/.test(C.rowTargetError({ type: "omarchy", ref: "--upload-pack=x" })));
+ok("rowTargetError id", /Invalid id/.test(C.rowTargetError({ type: "hyprland", ref: "https://h/a.git", id: "-f" })));
+eq("hasTarget false for invalid", C.hasTarget(C.normalizeRow({ type: "aur", ref: "--overwrite=*" })), false);
+
+// buildCommand never lets user data become an option
+const hostile = [
+  { type: "pacman", ref: "good --config=/tmp/x -Syu" },
+  { type: "aur", ref: "--overwrite=*" },
+  { type: "flatpak", ref: "--user org.x.Y" },
+  { type: "omarchy", ref: "--help" },
+  { type: "omarchy", ref: "https://h/p.git", id: "--yes" },
+  { type: "hyprland", ref: "https://h/q.git", id: "-f" },
+  { type: "hyprland", ref: "", id: "--force" }
+];
+["add", "remove"].forEach(action => {
+  const cmd = C.buildCommand(C.groupByType(hostile.map(C.normalizeRow)), action);
+  ok(action + " hostile rows produce no user-supplied option: " + JSON.stringify(cmd),
+    !/'-/.test(cmd));
+  // a row with any bad target is skipped entirely, not partially installed
+  ok(action + " partially-bad pacman row skipped", cmd.indexOf("'good'") === -1);
+});
+eq("groupForInstall skips invalid rows", C.groupForInstall(hostile.map(C.normalizeRow)).pacman.length, 0);
+eq("commandForRow of invalid row is empty", C.commandForRow({ type: "hyprland", id: "--force" }, "remove"), "");
+ok("flatpak install carries -- terminator",
+  C.buildCommand(C.groupByType([{ type: "flatpak", ref: "org.x.Y" }]), "add").indexOf(" -y -- flathub ") !== -1);
+ok("every stage uses an absolute tool path",
+  rmMixed.split(" && ").every(st => st.charAt(0) === "/"));
+
+// importInstalled drops malformed status entries
+const badImp = C.importInstalled([], {
+  plugins: [{ id: "--evil", firstParty: false }, { id: "ok.id", clonedFrom: "--upload-pack=x", firstParty: false }],
+  hyprpm: [{ repo: "-f", plugins: [] }],
+  flatpak: ["--user"],
+  apps: ["-Syu", "mpv"]
+});
+eq("importInstalled skips malformed entries", badImp.length, 2);   // ok.id + mpv
+ok("importInstalled strips bad clonedFrom", badImp.find(r => r.id === "ok.id").ref === "");
 
 // ── needsTerminal ───────────────────────────────────────────────────────────
 eq("needsTerminal true for pacman", C.needsTerminal(C.groupByType([{ type: "pacman", ref: "x" }])), true);
@@ -138,14 +206,14 @@ const fpRec = C.reconcile(fpRows, { flatpak: ["com.nvidia.geforcenow", "org.a.A"
 eq("flatpak installed when id present", fpRec[0].installed, true);
 eq("flatpak not installed when one id missing", fpRec[1].installed, false);
 eq("flatpak add command", C.buildCommand(C.groupByType([fpRows[0]]), "add"),
-  "flatpak install -y flathub 'com.nvidia.geforcenow'");
+  B.flatpak + " install -y -- flathub 'com.nvidia.geforcenow'");
 eq("flatpak remove command", C.buildCommand(C.groupByType([fpRows[0]]), "remove"),
-  "flatpak uninstall -y 'com.nvidia.geforcenow'");
+  B.flatpak + " uninstall -y -- 'com.nvidia.geforcenow'");
 const fpMixed = C.buildCommand(C.groupByType([
   { type: "pacman", ref: "p" }, { type: "flatpak", ref: "org.x.Y" }
 ]), "add");
 ok("flatpak stage after pacman: " + fpMixed,
-  fpMixed === "omarchy-pkg-add 'p' && flatpak install -y flathub 'org.x.Y'");
+  fpMixed === B.pkgAdd + " 'p' && " + B.flatpak + " install -y -- flathub 'org.x.Y'");
 eq("flatpak filter", C.filterRows(fpRec, { type: "flatpak" }).length, 2);
 
 // ── flatpakName ───────────────────────────────────────────────────────────

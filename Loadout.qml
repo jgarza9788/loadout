@@ -30,6 +30,28 @@ Item {
     Qt.resolvedUrl("catalog.default.json").toString().replace(/^file:\/\//, "")
   readonly property string statusScript:
     Qt.resolvedUrl("bin/loadout-status").toString().replace(/^file:\/\//, "")
+  readonly property string catalogHelper:
+    Qt.resolvedUrl("bin/loadout-catalog").toString().replace(/^file:\/\//, "")
+
+  // ── Trusted process launch ─────────────────────────────────────────────
+  //
+  // Every helper runs by absolute path with a cleared environment and a pinned
+  // PATH, so nothing planted in the session's PATH is ever executed.
+  readonly property string trustedPath: "/usr/bin:/usr/share/omarchy/bin"
+  readonly property var trustedEnv: ({
+    PATH: root.trustedPath,
+    HOME: root.homeDir,
+    XDG_RUNTIME_DIR: Quickshell.env("XDG_RUNTIME_DIR") || "",
+    WAYLAND_DISPLAY: Quickshell.env("WAYLAND_DISPLAY") || "",
+    LANG: "C.UTF-8"
+  })
+  readonly property int statusDeadlineSec: 20
+  readonly property int statusMaxBytes: 4194304
+  // Detached GUI launches keep the session env (the terminal needs it) but
+  // never resolve anything through the inherited PATH.
+  function spawn(argv) {
+    Quickshell.execDetached({ command: argv, environment: { PATH: root.trustedPath } });
+  }
 
   // ── State ────────────────────────────────────────────────────────────────
   property bool opened: false
@@ -75,7 +97,15 @@ Item {
   }
 
   // ── Catalog load / merge / save ─────────────────────────────────────────
-  Component.onCompleted: Quickshell.execDetached(["mkdir", "-p", root.configDir])
+  // The catalog lives at a predictable, user-writable path, so it is never
+  // opened directly: bin/loadout-catalog reads and writes it through a single
+  // O_NOFOLLOW|O_NONBLOCK descriptor with type / owner / size checks, and
+  // replaces it atomically (see that script). It also creates configDir 0700.
+  Component.onCompleted: catalogReadProc.running = true
+  Component.onDestruction: {
+    statusWatchdog.stop();
+    statusProc.running = false;
+  }
 
   FileView {
     id: defaultsFile
@@ -89,23 +119,65 @@ Item {
     onLoadFailed: { root.defaultRows = []; root.tryMergeCatalog(); }
   }
 
-  FileView {
-    id: catalogFile
-    path: root.catalogPath
-    watchChanges: false          // only this plugin writes it
-    atomicWrites: true
-    printErrors: false
-    onLoaded: {
-      var parsed = [];
-      try { parsed = JSON.parse(String(text() || "[]")); } catch (e) { parsed = []; }
-      if (!Array.isArray(parsed)) parsed = [];
-      root._userRows = parsed;
-      root.tryMergeCatalog();
+  // Set when catalog.json was rejected; saving stays off for the session so
+  // the seed never overwrites (or follows) a file we refused to read.
+  property string catalogError: ""
+
+  Process {
+    id: catalogReadProc
+    command: ["/usr/bin/timeout", "-k", "2", "10",
+              "/usr/bin/python3", "-I", "-S", root.catalogHelper, "read", root.catalogPath]
+    clearEnvironment: true
+    environment: root.trustedEnv
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var parsed = null;
+        try { parsed = JSON.parse(String(text || "")); } catch (e) { parsed = null; }
+        if (Array.isArray(parsed)) {
+          root._userRows = parsed;
+        } else {
+          root.catalogError = (parsed && parsed.error) ? String(parsed.error) : "unreadable";
+          root._userRows = [];
+          root.toast("catalog.json rejected: " + root.catalogError);
+        }
+        root.tryMergeCatalog();
+      }
     }
-    onLoadFailed: {
-      root._userRows = [];
-      root.tryMergeCatalog();
+  }
+
+  Process {
+    id: catalogWriteProc
+    property string pending: ""
+    property bool queued: false
+    command: ["/usr/bin/timeout", "-k", "2", "10",
+              "/usr/bin/python3", "-I", "-S", root.catalogHelper, "write", root.catalogPath]
+    clearEnvironment: true
+    environment: root.trustedEnv
+    stdinEnabled: true
+    onStarted: {
+      catalogWriteProc.write(catalogWriteProc.pending);
+      catalogWriteProc.stdinEnabled = false;       // closes stdin → helper sees EOF
     }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var res = null;
+        try { res = JSON.parse(String(text || "")); } catch (e) { res = null; }
+        if (!res || !res.ok) root.toast("Could not save catalog: " + ((res && res.error) || "helper failed"));
+      }
+    }
+    onExited: {
+      if (catalogWriteProc.queued) { catalogWriteProc.queued = false; Qt.callLater(root.writeCatalogNow); }
+    }
+  }
+
+  function writeCatalogNow() {
+    if (root.catalogError) return;
+    if (catalogWriteProc.running) { catalogWriteProc.queued = true; return; }
+    catalogWriteProc.pending = JSON.stringify(root.stripRows(root.rows), null, 2) + "\n";
+    catalogWriteProc.stdinEnabled = true;
+    catalogWriteProc.running = true;
   }
 
   property var _userRows: null     // null until the catalog file resolves once
@@ -134,7 +206,7 @@ Item {
   Timer {
     id: saveTimer
     interval: 400
-    onTriggered: catalogFile.setText(JSON.stringify(root.stripRows(root.rows), null, 2) + "\n")
+    onTriggered: root.writeCatalogNow()
   }
   function saveCatalog() { saveTimer.restart(); }
 
@@ -142,21 +214,36 @@ Item {
   property bool scanning: false
   property bool manualRefresh: false
 
+  // bin/loadout-status, bounded as a whole: `timeout` (no --foreground) puts
+  // the probe in its own process group and kills the entire group at the
+  // deadline; `head -c` caps what reaches the collector; the watchdog below is
+  // a backstop in case the timeout itself wedges.
   Process {
     id: statusProc
     property bool queued: false
+    clearEnvironment: true
+    environment: root.trustedEnv
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        var raw = String(text || "");
+        if (raw.length >= root.statusMaxBytes) return;   // truncated by the cap — ignore
         var obj = null;
-        try { obj = JSON.parse(String(text || "{}")); } catch (e) { obj = null; }
-        if (obj) { root.statusObj = obj; root.applyStatus(); }
+        try { obj = JSON.parse(raw || "{}"); } catch (e) { obj = null; }
+        if (obj && typeof obj === "object" && !Array.isArray(obj)) { root.statusObj = obj; root.applyStatus(); }
       }
     }
     onExited: {
+      statusWatchdog.stop();
       root.scanning = false;
       if (statusProc.queued) { statusProc.queued = false; Qt.callLater(function () { root.refreshStatus(); }); }
     }
+  }
+
+  Timer {
+    id: statusWatchdog
+    interval: (root.statusDeadlineSec + 5) * 1000
+    onTriggered: statusProc.running = false
   }
 
   // Re-run bin/loadout-status. `manual` shows a toast when it lands. Re-assigning
@@ -165,8 +252,14 @@ Item {
     if (manual === true) root.manualRefresh = true;
     if (statusProc.running) { statusProc.queued = true; return; }
     root.scanning = true;
-    statusProc.command = ["bash", root.statusScript];
+    statusProc.command = [
+      "/usr/bin/timeout", "-k", "3", String(root.statusDeadlineSec),
+      "/usr/bin/bash", "--noprofile", "--norc", "-c",
+      "\"$1\" | /usr/bin/head -c " + root.statusMaxBytes,
+      "loadout-status", root.statusScript
+    ];
     statusProc.running = true;
+    statusWatchdog.restart();
   }
 
   function applyStatus() {
@@ -337,6 +430,8 @@ Item {
     if (!r || r.busy) return;
     if (action === "add" && r.installed) { toast("Already installed"); return; }
     if (action === "remove" && !r.installed) { toast("Not installed"); return; }
+    var bad = Catalog.rowTargetError(r);
+    if (bad) { toast(bad); return; }
     runRow(r, action);
   }
   function cursorOpenLink() {
@@ -447,7 +542,7 @@ Item {
 
   function launch(cmd, keys) {
     if (!cmd) { toast("Nothing to do"); return; }
-    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", cmd]);
+    root.spawn(["/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation", cmd]);
     var snap = {};
     for (var i = 0; i < keys.length; i++) {
       var r = findRowByKey(keys[i]);
@@ -469,9 +564,15 @@ Item {
   function runBulk(action) {
     var sel = selectedRows();
     if (sel.length === 0) { toast("Select some rows first"); return; }
+    var invalid = sel.filter(function (r) { return Catalog.rowTargetError(r) !== ""; }).length;
     var groups = action === "add" ? Catalog.groupForInstall(sel) : Catalog.groupForRemove(sel);
     var cmd = Catalog.buildCommand(groups, action, root.quote);
-    if (!cmd) { toast(action === "add" ? "Everything selected is already installed" : "Nothing selected is installed"); return; }
+    if (!cmd) {
+      toast(invalid ? (invalid + (invalid === 1 ? " row" : " rows") + " skipped: invalid target")
+                    : (action === "add" ? "Everything selected is already installed" : "Nothing selected is installed"));
+      return;
+    }
+    if (invalid) toast(invalid + (invalid === 1 ? " row" : " rows") + " skipped: invalid target");
     var keys = keysOfGroups(groups);
     // Add and Remove both hand off to the terminal, in this order:
     //   1. launch the terminal so the job is already on its way;
@@ -494,15 +595,19 @@ Item {
     repeat: true
     property int shots: 0
     onTriggered: {
-      Quickshell.execDetached(["hyprctl", "dispatch", "focuswindow",
-                               "class:^(org\\.omarchy\\.terminal)$"]);
+      root.spawn(["/usr/bin/hyprctl", "dispatch", "focuswindow",
+                  "class:^(org\\.omarchy\\.terminal)$"]);
       if (++focusTermTimer.shots >= 3) focusTermTimer.stop();
     }
   }
   function focusTerminalSoon() { focusTermTimer.shots = 0; focusTermTimer.restart(); }
 
+  // Only plain https links, so a catalog value can never become an xdg-open
+  // option or a file:/custom-scheme handler launch.
   function openLink(link) {
-    if (link) Quickshell.execDetached(["xdg-open", link]);
+    var s = String(link || "");
+    if (/^https:\/\/[^\s]+$/.test(s)) root.spawn(["/usr/bin/xdg-open", s]);
+    else if (s) toast("Only https links can be opened");
   }
 
   Timer { id: toastTimer; interval: 2600; onTriggered: root.toastText = "" }
@@ -524,6 +629,7 @@ Item {
   }
   function close() {
     closeTimer.stop();
+    if (statusProc.running && root.jobKeys.length === 0) { statusWatchdog.stop(); statusProc.running = false; }
     root.opened = false;
     root.closing = false;
     root.query = "";

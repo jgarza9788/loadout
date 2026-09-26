@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
+import "Catalog.js" as Catalog
 
 // Modal form to add / edit / delete one loadout entry. Emits `submitted` with
 // (original, edited) — original is null for a brand-new row — or `deleted`.
@@ -46,7 +47,9 @@ Item {
     : fType === "hyprland"
       ? "hyprpm plugin name (for enable + status)"
       : "id (optional)"
-  readonly property bool canSave: fName.trim().length > 0 && fRef.trim().length > 0
+  // Same per-backend grammar the command builder enforces, surfaced while typing.
+  readonly property string targetError: Catalog.rowTargetError(collect())
+  readonly property bool canSave: fName.trim().length > 0 && fRef.trim().length > 0 && targetError === ""
 
   function collect() {
     return {
@@ -163,6 +166,16 @@ Item {
         }
       }
 
+      Text {
+        width: parent.width
+        visible: root.fRef.trim().length > 0 && root.targetError !== ""
+        text: root.targetError
+        color: Color.urgent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.Wrap
+      }
+
       Field {
         label: "Link (homepage — defaults to the URL above)"
         TextField {
@@ -202,7 +215,7 @@ Item {
           accent: Color.accent
           active: root.canSave
           enabled: root.canSave
-          onClicked: root.submitted(root.original, root.collect())
+          onClicked: root.trySave()
         }
       }
     }

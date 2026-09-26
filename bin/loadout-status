@@ -9,14 +9,32 @@
 #     "hyprpm":   [ { "repo": name, "plugins": [ {"name","enabled"} … ] } … ] }
 #
 # Read-only. No sudo. Safe to poll.
+#
+# Every tool is invoked by absolute path and PATH is pinned, so a directory
+# planted earlier in the caller's PATH cannot substitute code here. Each
+# external query runs under its own `timeout`; the overlay additionally bounds
+# the whole script (deadline, process-group kill, output cap).
 
 set -uo pipefail
+unset IFS CDPATH BASH_ENV ENV
+export PATH=/usr/bin:/usr/share/omarchy/bin
+umask 077
 
-lines_to_json() { jq -R -s 'split("\n") | map(select(length > 0))'; }
+readonly JQ=/usr/bin/jq PACMAN=/usr/bin/pacman FLATPAK=/usr/bin/flatpak HYPRPM=/usr/bin/hyprpm
+readonly OMARCHY=/usr/share/omarchy/bin/omarchy TIMEOUT=/usr/bin/timeout
+readonly AWK=/usr/bin/awk SED=/usr/bin/sed GREP=/usr/bin/grep SORT=/usr/bin/sort
 
-mapfile -t _explicit < <(pacman -Qqe 2>/dev/null)
+# Bound each query: 8s, then SIGKILL 2s later.
+t() { "$TIMEOUT" -k 2 8 "$@"; }
+
+lines_to_json() { "$JQ" -R -s 'split("\n") | map(select(length > 0))'; }
+
+[ -x "$JQ" ] || { printf '{}\n'; exit 0; }
+
+_explicit=()
+[ -x "$PACMAN" ] && mapfile -t _explicit < <(t "$PACMAN" -Qqe 2>/dev/null)
 explicit="$(printf '%s\n' "${_explicit[@]}" | lines_to_json)"
-foreign="$(pacman -Qqm 2>/dev/null | lines_to_json)"
+if [ -x "$PACMAN" ]; then foreign="$(t "$PACMAN" -Qqm 2>/dev/null | lines_to_json)"; else foreign="[]"; fi
 
 # "apps": the explicitly-installed packages that a user would recognise as an
 # application — they own at least one launcher in /usr/share/applications that is
@@ -24,28 +42,29 @@ foreign="$(pacman -Qqm 2>/dev/null | lines_to_json)"
 # cheap grep per candidate .desktop file. Excludes libraries, toolchains, base.
 if ((${#_explicit[@]})); then
   apps="$(
-    pacman -Ql "${_explicit[@]}" 2>/dev/null \
-      | awk '$2 ~ /^\/usr\/share\/applications\/[^\/]+\.desktop$/ { print $1 "\t" $2 }' \
+    t "$PACMAN" -Ql "${_explicit[@]}" 2>/dev/null \
+      | "$AWK" '$2 ~ /^\/usr\/share\/applications\/[^\/]+\.desktop$/ { print $1 "\t" $2 }' \
       | while IFS=$'\t' read -r pkg path; do
           [ -r "$path" ] || continue
-          grep -qiE '^(NoDisplay|Hidden)[[:space:]]*=[[:space:]]*true' "$path" && continue
+          "$GREP" -qiE '^(NoDisplay|Hidden)[[:space:]]*=[[:space:]]*true' "$path" && continue
           printf '%s\n' "$pkg"
         done \
-      | sort -u | lines_to_json
+      | "$SORT" -u | lines_to_json
   )"
 else
   apps="[]"
 fi
 case "$apps" in \[*) : ;; *) apps="[]" ;; esac
 
-if command -v flatpak >/dev/null 2>&1; then
-  flatpak="$(flatpak list --app --columns=application 2>/dev/null | lines_to_json)"
+if [ -x "$FLATPAK" ]; then
+  flatpak="$(t "$FLATPAK" list --app --columns=application 2>/dev/null | lines_to_json)"
 else
   flatpak="[]"
 fi
 case "$flatpak" in \[*) : ;; *) flatpak="[]" ;; esac
 
-plugins="$(omarchy plugin list --json 2>/dev/null)"
+plugins="[]"
+[ -x "$OMARCHY" ] && plugins="$(t "$OMARCHY" plugin list --json 2>/dev/null)"
 case "$plugins" in
   \[*) : ;;
   *) plugins="[]" ;;
@@ -55,51 +74,53 @@ esac
 #   → Repository <repo> (by …):
 #     │ Plugin <name>
 #     └─ enabled: <true|false>
-hyprpm="$(
-  hyprpm list 2>/dev/null \
-    | sed -r 's/\x1b\[[0-9;]*m//g' \
-    | awk '
-        function flush() {
-          if (repo != "") {
-            entries = entries (entries == "" ? "" : ",") \
-              "{\"repo\":\"" repo "\",\"plugins\":[" plugins "]}"
+# awk emits tab-separated records ("R\t<repo>" / "P\t<name>\t<enabled>");
+# jq assembles the JSON so names are always properly escaped.
+hyprpm="[]"
+if [ -x "$HYPRPM" ]; then
+  hyprpm="$(
+    t "$HYPRPM" list 2>/dev/null \
+      | "$SED" -r 's/\x1b\[[0-9;]*m//g' \
+      | "$AWK" '
+          /Repository[ \t]+[^ \t]/ {
+            line = $0
+            sub(/.*Repository[ \t]+/, "", line)
+            sub(/[ \t]*\(by.*$/, "", line)
+            sub(/:[ \t]*$/, "", line)
+            gsub(/[ \t]+$/, "", line)
+            gsub(/\t/, " ", line)
+            print "R\t" line
+            next
           }
-          repo = ""; plugins = ""
-        }
-        /Repository[ \t]+[^ \t]/ {
-          flush()
-          line = $0
-          sub(/.*Repository[ \t]+/, "", line)
-          sub(/[ \t]*\(by.*$/, "", line)
-          sub(/:[ \t]*$/, "", line)
-          gsub(/[ \t]+$/, "", line)
-          repo = line
-          next
-        }
-        /Plugin[ \t]+[^ \t]/ {
-          pname = $0
-          sub(/.*Plugin[ \t]+/, "", pname)
-          gsub(/[ \t]+$/, "", pname)
-          next
-        }
-        /enabled:[ \t]*(true|false)/ {
-          en = ($0 ~ /true/) ? "true" : "false"
-          if (pname != "") {
-            plugins = plugins (plugins == "" ? "" : ",") \
-              "{\"name\":\"" pname "\",\"enabled\":" en "}"
+          /Plugin[ \t]+[^ \t]/ {
+            pname = $0
+            sub(/.*Plugin[ \t]+/, "", pname)
+            gsub(/[ \t]+$/, "", pname)
+            gsub(/\t/, " ", pname)
+            next
+          }
+          /enabled:[ \t]*(true|false)/ {
+            if (pname != "") print "P\t" pname "\t" (($0 ~ /true/) ? "true" : "false")
             pname = ""
+            next
           }
-          next
-        }
-        END { flush(); print "[" entries "]" }
-      '
-)"
+        ' \
+      | "$JQ" -R -s '
+          split("\n") | map(select(length > 0) | split("\t"))
+          | reduce .[] as $r ([];
+              if $r[0] == "R" then . + [{repo: $r[1], plugins: []}]
+              elif $r[0] == "P" and length > 0 then
+                .[-1].plugins += [{name: $r[1], enabled: ($r[2] == "true")}]
+              else . end)
+        '
+  )"
+fi
 case "$hyprpm" in
   \[*) : ;;
   *) hyprpm="[]" ;;
 esac
 
-jq -nc \
+"$JQ" -nc \
   --argjson explicit "${explicit:-[]}" \
   --argjson foreign "${foreign:-[]}" \
   --argjson apps "${apps:-[]}" \

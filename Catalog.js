@@ -46,6 +46,64 @@ function uniq(arr) {
 
 function arr(v) { return Array.isArray(v) ? v : []; }
 
+// ── target grammar ──────────────────────────────────────────────────────────
+//
+// Every value that reaches a package / plugin tool must match its backend's
+// grammar. Shell quoting stops metacharacters; this stops argument / option
+// injection (a ref like `--config=/tmp/x`). None of these grammars admit a
+// leading `-`, which matters because only flatpak honours a `--` terminator:
+// omarchy-pkg-* forward "$@" to `pacman -Q` too, omarchy plugin add/remove
+// reject any `-*` argument, and hyprpm has no terminator at all.
+
+var PKG_RE = /^[a-z0-9@_+][a-z0-9@._+-]{0,127}$/;                 // Arch pkgname
+var FLATPAK_RE = /^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z_][A-Za-z0-9_-]*){2,}$/;
+var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;               // plugin id / hyprpm name
+var HTTPS_GIT_RE = /^https:\/\/[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?\/[A-Za-z0-9._~\/-]+$/;
+var SSH_GIT_RE = /^git@[A-Za-z0-9][A-Za-z0-9.-]*:[A-Za-z0-9._~\/-]+$/;
+
+function isPkgName(s) { return typeof s === "string" && PKG_RE.test(s); }
+function isFlatpakId(s) { return typeof s === "string" && s.length <= 255 && FLATPAK_RE.test(s); }
+function isPluginName(s) { return typeof s === "string" && NAME_RE.test(s); }
+function isGitUrl(s) {
+  return typeof s === "string" && s.length <= 512 && (HTTPS_GIT_RE.test(s) || SSH_GIT_RE.test(s));
+}
+
+// kind ∈ pkg | flatpak | name | url
+function validTarget(kind, value) {
+  if (kind === "pkg") return isPkgName(value);
+  if (kind === "flatpak") return isFlatpakId(value);
+  if (kind === "name") return isPluginName(value);
+  if (kind === "url") return isGitUrl(value);
+  return false;
+}
+
+// Human-readable reason this row cannot be installed / removed, or "" if its
+// targets are all well-formed.
+function rowTargetError(raw) {
+  var r = normalizeRow(raw);
+  if (r.type === "pacman" || r.type === "aur") {
+    var pkgs = pkgList(r.ref);
+    if (!pkgs.length) return "Package name required";
+    for (var i = 0; i < pkgs.length; i++)
+      if (!isPkgName(pkgs[i])) return "Invalid package name: " + pkgs[i];
+    return "";
+  }
+  if (r.type === "flatpak") {
+    var apps = pkgList(r.ref);
+    if (!apps.length) return "Flatpak app id required";
+    for (var j = 0; j < apps.length; j++)
+      if (!isFlatpakId(apps[j])) return "Invalid Flatpak app id: " + apps[j];
+    return "";
+  }
+  // omarchy / hyprland
+  if (!r.ref && !r.id) return "Git URL or id required";
+  if (r.ref && !isGitUrl(r.ref)) return "Git URL must be https://host/path or git@host:path";
+  if (r.id && !isPluginName(r.id)) return "Invalid id: " + r.id;
+  if (r.type === "hyprland" && r.ref && !isPluginName(repoNameFromUrl(r.ref)))
+    return "Cannot derive a hyprpm repo name from that URL";
+  return "";
+}
+
 // ── normalize ────────────────────────────────────────────────────────────────
 
 function normalizeRow(raw) {
@@ -189,10 +247,8 @@ function filterRows(rows, opts) {
 // ── grouping + command building ─────────────────────────────────────────────
 
 function hasTarget(r) {
-  if (r.type === "pacman" || r.type === "aur" || r.type === "flatpak") return pkgList(r.ref).length > 0;
-  if (r.type === "omarchy") return !!(r.ref || r.id);
-  if (r.type === "hyprland") return !!(r.ref || r.id);
-  return false;
+  if (TYPES.indexOf(r && r.type) === -1) return false;
+  return rowTargetError(r) === "";
 }
 
 function groupByType(rows) {
@@ -213,9 +269,23 @@ function shq(value) {
   return "'" + String(value == null ? "" : value).replace(/'/g, "'\\''") + "'";
 }
 
-function collectPkgs(rows) {
-  return uniq(arr(rows).reduce(function (acc, r) { return acc.concat(pkgList(r.ref)); }, []));
+// Every well-formed target in `rows`; anything else is silently dropped here
+// (callers surface the reason via rowTargetError before launching).
+function collectPkgs(rows, kind) {
+  return uniq(arr(rows).reduce(function (acc, r) { return acc.concat(pkgList(r.ref)); }, [])
+    .filter(function (p) { return validTarget(kind || "pkg", p); }));
 }
+
+// Absolute tool paths: the command runs in a terminal that inherits the
+// user's PATH, so never resolve a privileged tool through it.
+var BIN = {
+  pkgAdd: "/usr/share/omarchy/bin/omarchy-pkg-add",
+  pkgAurAdd: "/usr/share/omarchy/bin/omarchy-pkg-aur-add",
+  pkgDrop: "/usr/share/omarchy/bin/omarchy-pkg-drop",
+  omarchy: "/usr/share/omarchy/bin/omarchy",
+  flatpak: "/usr/bin/flatpak",
+  hyprpm: "/usr/bin/hyprpm"
+};
 
 // Join every stage for `groups` into ONE shell string (stages chained with
 // ` && `). `quoteFn` defaults to POSIX single-quoting; the QML side passes
@@ -228,34 +298,46 @@ function buildCommand(groups, action, quoteFn) {
   var hyprland = arr(groups.hyprland);
   var stages = [];
 
+  // Only rows whose every target is well-formed — buildCommand re-validates
+  // because runRow reaches it without going through groupFor*.
+  var okRows = function (list) { return arr(list).filter(function (r) { return rowTargetError(r) === ""; }); };
+  omarchy = okRows(omarchy);
+  hyprland = okRows(hyprland);
+  var hyprStages = 0;
+
   if (action === "add") {
-    var pac = collectPkgs(groups.pacman);
-    var aur = collectPkgs(groups.aur);
-    var fp = collectPkgs(groups.flatpak);
-    if (pac.length) stages.push("omarchy-pkg-add " + pac.map(q).join(" "));
-    if (aur.length) stages.push("omarchy-pkg-aur-add " + aur.map(q).join(" "));
-    if (fp.length) stages.push("flatpak install -y flathub " + fp.map(q).join(" "));
+    var pac = collectPkgs(okRows(groups.pacman), "pkg");
+    var aur = collectPkgs(okRows(groups.aur), "pkg");
+    var fp = collectPkgs(okRows(groups.flatpak), "flatpak");
+    if (pac.length) stages.push(BIN.pkgAdd + " " + pac.map(q).join(" "));
+    if (aur.length) stages.push(BIN.pkgAurAdd + " " + aur.map(q).join(" "));
+    if (fp.length) stages.push(BIN.flatpak + " install -y -- flathub " + fp.map(q).join(" "));
     omarchy.forEach(function (r) {
-      stages.push("omarchy plugin add " + q(r.ref) + " --enable --yes");
+      if (!r.ref) return;                       // add needs a URL; id alone is not installable
+      stages.push(BIN.omarchy + " plugin add " + q(r.ref) + " --enable --yes");
     });
     hyprland.forEach(function (r) {
-      stages.push("hyprpm add " + q(r.ref));
-      if (r.id) stages.push("hyprpm enable " + q(r.id));
+      if (!r.ref) return;
+      stages.push(BIN.hyprpm + " add " + q(r.ref));
+      if (r.id) stages.push(BIN.hyprpm + " enable " + q(r.id));
+      hyprStages++;
     });
-    if (hyprland.length) stages.push("hyprpm reload -n");
   } else {
-    var drop = uniq(collectPkgs(groups.pacman).concat(collectPkgs(groups.aur)));
-    var fpDrop = collectPkgs(groups.flatpak);
-    if (drop.length) stages.push("omarchy-pkg-drop " + drop.map(q).join(" "));
-    if (fpDrop.length) stages.push("flatpak uninstall -y " + fpDrop.map(q).join(" "));
+    var drop = uniq(collectPkgs(okRows(groups.pacman), "pkg").concat(collectPkgs(okRows(groups.aur), "pkg")));
+    var fpDrop = collectPkgs(okRows(groups.flatpak), "flatpak");
+    if (drop.length) stages.push(BIN.pkgDrop + " " + drop.map(q).join(" "));
+    if (fpDrop.length) stages.push(BIN.flatpak + " uninstall -y -- " + fpDrop.map(q).join(" "));
     omarchy.forEach(function (r) {
-      stages.push("omarchy plugin remove " + q(r.id || r.ref) + " --yes");
+      stages.push(BIN.omarchy + " plugin remove " + q(r.id || r.ref) + " --yes");
     });
     hyprland.forEach(function (r) {
-      stages.push("hyprpm remove " + q(repoNameFromUrl(r.ref) || r.id));
+      var repo = repoNameFromUrl(r.ref) || r.id;
+      if (!isPluginName(repo)) return;
+      stages.push(BIN.hyprpm + " remove " + q(repo));
+      hyprStages++;
     });
-    if (hyprland.length) stages.push("hyprpm reload -n");
   }
+  if (hyprStages) stages.push(BIN.hyprpm + " reload -n");
 
   return stages.join(" && ");
 }
@@ -314,6 +396,8 @@ function importInstalled(rows, status) {
 
   arr(status.plugins).forEach(function (p) {
     if (!p || !p.id || p.firstParty === true) return;   // skip Omarchy's bundled plugins
+    if (!isPluginName(String(p.id))) return;
+    if (p.clonedFrom && !isGitUrl(String(p.clonedFrom))) p = { id: p.id, name: p.name, kinds: p.kinds };
     if (haveOmId[p.id]) return;
     if (p.clonedFrom && haveOmRef[p.clonedFrom]) return;
     var kinds = p.kinds ? [].concat(p.kinds).join("/") : "";
@@ -329,7 +413,7 @@ function importInstalled(rows, status) {
   });
 
   arr(status.hyprpm).forEach(function (e) {
-    if (!e || !e.repo || haveHypr[e.repo]) return;
+    if (!e || !isPluginName(e.repo) || haveHypr[e.repo]) return;
     out.push(normalizeRow({
       name: e.repo,
       description: "Hyprland plugin",
@@ -343,7 +427,7 @@ function importInstalled(rows, status) {
 
   arr(status.flatpak).forEach(function (appId) {
     var id = String(appId || "").trim();
-    if (!id || haveFlatpak[id]) return;
+    if (!isFlatpakId(id) || haveFlatpak[id]) return;
     out.push(normalizeRow({
       name: flatpakName(id),
       description: "Flatpak app",
@@ -357,7 +441,7 @@ function importInstalled(rows, status) {
 
   arr(status.apps).forEach(function (pkg) {
     var name = String(pkg || "").trim();
-    if (!name || havePkg[name]) return;
+    if (!isPkgName(name) || havePkg[name]) return;
     out.push(normalizeRow({
       name: name,
       description: "Installed app",
@@ -380,6 +464,9 @@ if (typeof module !== "undefined") {
     repoNameFromUrl: repoNameFromUrl,
     flatpakName: flatpakName,
     pkgList: pkgList,
+    validTarget: validTarget,
+    rowTargetError: rowTargetError,
+    BIN: BIN,
     normalizeRow: normalizeRow,
     normalizeCatalog: normalizeCatalog,
     catalogKey: catalogKey,

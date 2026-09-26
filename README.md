@@ -67,6 +67,14 @@ JSON array, separate from this plugin's git checkout so it survives updates. On
 first run it's seeded from `catalog.default.json`; on later runs any *new*
 default rows are appended without touching your edits.
 
+The file is never opened directly by the shell. `bin/loadout-catalog` reads and
+writes it through one `O_NOFOLLOW | O_NONBLOCK` descriptor and refuses anything
+that isn't a regular file you own, is group/world writable, or is over 1 MiB
+(the same checks apply to its directory, which is created `0700`). Writes are
+atomic (temp file + `fsync` + rename) and keep the file's existing mode. If the
+file is rejected, Loadout shows why and won't save for the rest of the session,
+so a bad file is never overwritten or followed.
+
 One row:
 
 ```json
@@ -86,13 +94,31 @@ One row:
 For a **hyprland** row, `ref` is the git URL and `id` is the *plugin* name shown
 by `hyprpm list` (used for `hyprpm enable` and status). `hyprpm remove` uses the
 repo name, which Loadout derives from the URL. **Flatpak** installs come from
-Flathub (`flatpak install -y flathub <id>`).
+Flathub (`flatpak install -y -- flathub <id>`).
+
+Every target is checked against its backend's format before it can reach a
+command, so a value can never be read as an option (e.g. `--config=…`). The
+row editor shows the problem inline and won't save; an invalid row already in
+the catalog is skipped with a toast.
+
+| Type | Accepted |
+|---|---|
+| pacman / aur | Arch package names: `a-z 0-9 @ . _ + -`, not starting with `-` or `.` |
+| flatpak | reverse-DNS app ids with at least three parts, e.g. `org.gnome.Calculator` |
+| omarchy / hyprland `ref` | `https://host/path` or `git@host:path` (no `http://`, `git://`, `file://`) |
+| omarchy / hyprland `id` | `A-Z a-z 0-9 . _ -`, starting with a letter or digit |
+
+Commands call every tool by absolute path (`/usr/share/omarchy/bin/…`,
+`/usr/bin/flatpak`, `/usr/bin/hyprpm`), and links only open when they're
+`https://`.
 
 ### Status
 
 `bin/loadout-status` reports the live picture (`pacman -Qqe` / `-Qqm`,
 `flatpak list --app`, `omarchy plugin list --json`, `hyprpm list`). Loadout runs
-it on open, after every job, and on **Refresh**. The dot in the Status column:
+it on open, after every job, and on **Refresh**. It runs with a cleared
+environment, a pinned `PATH`, and absolute tool paths, under a 20 s deadline
+that kills the whole process group, with its output capped at 4 MiB. The dot in the Status column:
 
 - green **installed** / **disabled** — present (disabled = an Omarchy/Hyprland
   plugin that's installed but not enabled)
@@ -142,6 +168,7 @@ is a separate action in the row editor (double-click a row, or **＋ New**).
 | `RowEditor.qml` | add / edit / delete one entry |
 | `Catalog.js` | pure logic (normalize, merge, reconcile, command building) — `node tests/catalog.test.js` |
 | `bin/loadout-status` | current-state probe (JSON) |
+| `bin/loadout-catalog` | bounded, no-follow, atomic catalog read/write — `bash tests/persist.test.sh` |
 | `catalog.default.json` | starter loadout |
 | `docs/` | the screenshot above (`loadout.svg` source + rendered `loadout.png`) |
 | `extras/` | Omarchy-menu entry, `install.sh`, `.desktop` |
