@@ -147,6 +147,12 @@ const V = C.validTarget;
  "git@github.com:foo/baz.git", "https://git.example.com:8443/a/b.git"].forEach(v =>
   eq("url accepts " + v, V("url", v), true));
 
+// omarchy rows cloned from a built-in plugin use a plugin id as ref
+eq("omarchy id-shaped ref is valid", C.rowTargetError({ type: "omarchy", ref: "omarchy.bar", id: "x.floating-bar" }), "");
+ok("omarchy id-shaped ref: remove by id", C.commandForRow({ type: "omarchy", ref: "omarchy.bar", id: "x.floating-bar" }, "remove").indexOf("remove 'x.floating-bar' --yes") !== -1);
+eq("omarchy id-shaped ref: no add stage", C.commandForRow({ type: "omarchy", ref: "omarchy.bar" }, "add"), "");
+ok("hyprland ref must still be a URL", /Git URL/.test(C.rowTargetError({ type: "hyprland", ref: "scrolloverview" })));
+
 // every shipped default row is well-formed
 require("../catalog.default.json").forEach(r =>
   eq("default row valid: " + r.name, C.rowTargetError(r), ""));

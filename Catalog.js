@@ -97,7 +97,10 @@ function rowTargetError(raw) {
   }
   // omarchy / hyprland
   if (!r.ref && !r.id) return "Git URL or id required";
-  if (r.ref && !isGitUrl(r.ref)) return "Git URL must be https://host/path or git@host:path";
+  // An omarchy row cloned from a built-in plugin carries that plugin's id as
+  // its ref (e.g. "omarchy.bar"); it can be removed / tracked, not added.
+  if (r.ref && !isGitUrl(r.ref) && !(r.type === "omarchy" && isPluginName(r.ref)))
+    return "Git URL must be https://host/path or git@host:path";
   if (r.id && !isPluginName(r.id)) return "Invalid id: " + r.id;
   if (r.type === "hyprland" && r.ref && !isPluginName(repoNameFromUrl(r.ref)))
     return "Cannot derive a hyprpm repo name from that URL";
@@ -313,7 +316,7 @@ function buildCommand(groups, action, quoteFn) {
     if (aur.length) stages.push(BIN.pkgAurAdd + " " + aur.map(q).join(" "));
     if (fp.length) stages.push(BIN.flatpak + " install -y -- flathub " + fp.map(q).join(" "));
     omarchy.forEach(function (r) {
-      if (!r.ref) return;                       // add needs a URL; id alone is not installable
+      if (!isGitUrl(r.ref)) return;             // add needs a URL; an id alone is not installable
       stages.push(BIN.omarchy + " plugin add " + q(r.ref) + " --enable --yes");
     });
     hyprland.forEach(function (r) {

@@ -105,7 +105,7 @@ the catalog is skipped with a toast.
 |---|---|
 | pacman / aur | Arch package names: `a-z 0-9 @ . _ + -`, not starting with `-` or `.` |
 | flatpak | reverse-DNS app ids with at least three parts, e.g. `org.gnome.Calculator` |
-| omarchy / hyprland `ref` | `https://host/path` or `git@host:path` (no `http://`, `git://`, `file://`) |
+| omarchy / hyprland `ref` | `https://host/path` or `git@host:path` (no `http://`, `git://`, `file://`); an omarchy row cloned from a built-in may use its plugin id instead (remove only) |
 | omarchy / hyprland `id` | `A-Z a-z 0-9 . _ -`, starting with a letter or digit |
 
 Commands call every tool by absolute path (`/usr/share/omarchy/bin/…`,
