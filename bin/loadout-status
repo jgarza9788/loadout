@@ -6,7 +6,8 @@
 #     "apps":     [pkg…],           # explicit pkgs that ship a visible .desktop launcher
 #     "flatpak":  [app-id…],        # flatpak list --app --columns=application
 #     "plugins":  [ … ],            # verbatim `omarchy plugin list --json`
-#     "hyprpm":   [ { "repo": name, "plugins": [ {"name","enabled"} … ] } … ] }
+#     "hyprpm":   [ { "repo": name, "plugins": [ {"name","enabled"} … ] } … ],
+#     "aur":      "enabled" | "updates" | "disabled" }   # bin/omarchy-aur --mode
 #
 # Read-only. No sudo. Safe to poll.
 #
@@ -22,6 +23,7 @@ umask 077
 
 readonly JQ=/usr/bin/jq PACMAN=/usr/bin/pacman FLATPAK=/usr/bin/flatpak HYPRPM=/usr/bin/hyprpm
 readonly OMARCHY=/usr/share/omarchy/bin/omarchy TIMEOUT=/usr/bin/timeout
+readonly AUR_TOOL="$(/usr/bin/dirname -- "$(/usr/bin/realpath -- "${BASH_SOURCE[0]}")")/omarchy-aur"
 readonly AWK=/usr/bin/awk SED=/usr/bin/sed GREP=/usr/bin/grep SORT=/usr/bin/sort
 
 # Bound each query: 8s, then SIGKILL 2s later.
@@ -120,6 +122,9 @@ case "$hyprpm" in
   *) hyprpm="[]" ;;
 esac
 
+aur="$(t /usr/bin/bash "$AUR_TOOL" --mode 2>/dev/null)"
+case "$aur" in enabled|updates|disabled) : ;; *) aur="enabled" ;; esac
+
 "$JQ" -nc \
   --argjson explicit "${explicit:-[]}" \
   --argjson foreign "${foreign:-[]}" \
@@ -127,4 +132,5 @@ esac
   --argjson flatpak "${flatpak:-[]}" \
   --argjson plugins "${plugins:-[]}" \
   --argjson hyprpm "${hyprpm:-[]}" \
-  '{explicit: $explicit, foreign: $foreign, apps: $apps, flatpak: $flatpak, plugins: $plugins, hyprpm: $hyprpm}'
+  --arg aur "$aur" \
+  '{explicit: $explicit, foreign: $foreign, apps: $apps, flatpak: $flatpak, plugins: $plugins, hyprpm: $hyprpm, aur: $aur}'

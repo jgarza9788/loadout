@@ -339,5 +339,45 @@ eq("refresh: re-refresh does not re-import it", refresh(g1, {
   plugins: [{ id: "new.thing", name: "New Thing", enabled: true, clonedFrom: "https://z/n.git", firstParty: false }]
 }).length, g1.length);
 
+// ── AUR mode ────────────────────────────────────────────────────────────────
+eq("aurMode default", C.normalizeAurMode(undefined), "enabled");
+eq("aurMode unknown -> enabled", C.normalizeAurMode("sometimes"), "enabled");
+eq("aurMode normalizes case", C.normalizeAurMode(" Updates "), "updates");
+ok("enabled allows add/update/remove", ["add", "update", "remove"].every(a => C.aurAllows("enabled", a)));
+ok("updates blocks add", !C.aurAllows("updates", "add"));
+ok("updates allows update + remove", C.aurAllows("updates", "update") && C.aurAllows("updates", "remove"));
+ok("disabled blocks everything", ["add", "update", "remove"].every(a => !C.aurAllows("disabled", a)));
+
+const aurMix = C.groupByType([
+  { type: "pacman", ref: "cowsay", installed: true },
+  { type: "aur", ref: "yay", installed: true }
+]);
+const addUpd = C.buildCommand(aurMix, "add", undefined, "updates");
+ok("updates mode: add keeps pacman: " + addUpd, addUpd.indexOf(B.pkgAdd + " 'cowsay'") === 0);
+ok("updates mode: add drops aur", addUpd.indexOf(B.pkgAurAdd) === -1 && addUpd.indexOf("yay") === -1);
+eq("enabled mode: add includes aur", C.buildCommand(aurMix, "add", undefined, "enabled").indexOf(B.pkgAurAdd + " 'yay'") !== -1, true);
+eq("mode omitted behaves as enabled", C.buildCommand(aurMix, "add").indexOf(B.pkgAurAdd + " 'yay'") !== -1, true);
+eq("updates mode: remove still drops aur", C.buildCommand(aurMix, "remove", undefined, "updates"), B.pkgDrop + " 'cowsay' 'yay'");
+eq("disabled mode: remove leaves aur alone", C.buildCommand(aurMix, "remove", undefined, "disabled"), B.pkgDrop + " 'cowsay'");
+eq("update command", C.buildCommand(aurMix, "update", undefined, "updates"), B.yay + " -S --aur --needed --noconfirm 'yay'");
+eq("update ignores non-aur rows", C.buildCommand(C.groupByType([{ type: "pacman", ref: "cowsay" }]), "update"), "");
+eq("disabled mode: update is empty", C.buildCommand(aurMix, "update", undefined, "disabled"), "");
+eq("update skips invalid aur target", C.buildCommand(C.groupByType([{ type: "aur", ref: "--overwrite=*" }]), "update"), "");
+eq("commandForRow passes mode", C.commandForRow({ type: "aur", ref: "yay" }, "add", undefined, "updates"), "");
+
+const updRows = [
+  { type: "aur", ref: "yay", installed: true },
+  { type: "aur", ref: "paru", installed: false },
+  { type: "pacman", ref: "cowsay", installed: true }
+];
+const gu = C.groupForUpdate(updRows);
+eq("groupForUpdate: installed aur only", gu.aur.length, 1);
+eq("groupForUpdate: no pacman", gu.pacman.length, 0);
+
+const shown = [{ type: "aur", name: "yay" }, { type: "pacman", name: "cowsay" }];
+eq("disabled hides aur rows", C.filterRows(shown, { aurMode: "disabled" }).length, 1);
+eq("updates keeps aur rows visible", C.filterRows(shown, { aurMode: "updates" }).length, 2);
+eq("disabled + aur filter shows nothing", C.filterRows(shown, { type: "aur", aurMode: "disabled" }).length, 0);
+
 console.log(failed === 0 ? "\nALL PASS" : "\n" + failed + " FAILED");
 process.exit(failed === 0 ? 0 : 1);

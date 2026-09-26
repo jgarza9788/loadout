@@ -10,9 +10,10 @@ Item {
   property var controller: null
   property int cursorIndex: -1
 
-  // A single tab stop for the whole list. Once focused, the panel's shared
-  // key handler drives j/k / arrows / space / ⏎ against the row cursor.
-  activeFocusOnTab: true
+  // Section 5 of the panel. Once focused, the panel's shared key handler
+  // drives j/k / arrows / space / ⏎ against the row cursor. Tab is the
+  // panel's (section to section), not Qt's tab chain.
+  activeFocusOnTab: false
 
   onCursorIndexChanged: list.currentIndex = cursorIndex
   // Re-assert currentIndex after the model was cleared+repopulated (which resets
@@ -129,7 +130,7 @@ Item {
           anchors.fill: parent
           hoverEnabled: true
           acceptedButtons: Qt.LeftButton
-          onClicked: root.controller.setCursor(rowItem.index)
+          onClicked: { root.forceActiveFocus(); root.controller.setCursor(rowItem.index); }
           onDoubleClicked: root.controller.editRow(rowItem.rowObj)
         }
 
@@ -155,7 +156,7 @@ Item {
                 color: Color.background
                 font.pixelSize: 11
               }
-              MouseArea { anchors.fill: parent; onClicked: root.controller.toggleSel(rowItem.key) }
+              MouseArea { anchors.fill: parent; onClicked: { root.forceActiveFocus(); root.controller.toggleSel(rowItem.key); } }
             }
           }
 
@@ -253,17 +254,6 @@ Item {
         font.pixelSize: Style.font.body
       }
     }
-  }
-
-  // Focus ring — drawn only when the list is the tab target.
-  Rectangle {
-    anchors.fill: parent
-    anchors.margins: -2
-    radius: 4
-    color: "transparent"
-    border.width: 1
-    border.color: Color.accent
-    visible: root.activeFocus
   }
 
   // ── Small helpers ────────────────────────────────────────────────

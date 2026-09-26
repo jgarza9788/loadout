@@ -32,6 +32,8 @@ Item {
     Qt.resolvedUrl("bin/loadout-status").toString().replace(/^file:\/\//, "")
   readonly property string catalogHelper:
     Qt.resolvedUrl("bin/loadout-catalog").toString().replace(/^file:\/\//, "")
+  readonly property string aurTool:
+    Qt.resolvedUrl("bin/omarchy-aur").toString().replace(/^file:\/\//, "")
 
   // ── Trusted process launch ─────────────────────────────────────────────
   //
@@ -74,7 +76,23 @@ Item {
   property string toastText: ""
   property bool helpOpen: false
 
-  readonly property var filterTypes: ["all", "pacman", "aur", "flatpak", "omarchy", "hyprland"]
+  // AUR mode — see Catalog.js. System-wide state owned by bin/omarchy-aur;
+  // read back through bin/loadout-status on every refresh.
+  property string aurMode: "enabled"
+  readonly property bool aurHidden: aurMode === "disabled"
+  readonly property var aurModeLabel: ({ enabled: "AUR: on", updates: "AUR: updates only", disabled: "AUR: off" })
+
+  // The filter tabs actually shown (AUR drops out while hidden). h/l cycle
+  // them and the number keys pick them in on-screen order.
+  readonly property var filterChips: [
+    { value: "all", label: "All" },
+    { value: "pacman", label: "Programs" },
+    { value: "aur", label: "AUR" },
+    { value: "flatpak", label: "Flatpak" },
+    { value: "omarchy", label: "Omarchy" },
+    { value: "hyprland", label: "Hyprland" }
+  ].filter(function (c) { return !(c.value === "aur" && root.aurHidden); })
+  readonly property var filterTypes: filterChips.map(function (c) { return c.value; })
 
   // Job tracking: keys of rows a launched command touches, and their installed
   // state at launch time so a status refresh can clear `busy` as soon as it flips.
@@ -185,6 +203,22 @@ Item {
 
   property var _userRows: null     // null until the catalog file resolves once
 
+  // The AUR button opens bin/omarchy-aur's picker in the floating terminal:
+  // it changes /etc/hosts, yay/paru config and a pacman hook, so it needs sudo
+  // and a confirmation keypress. The next status refresh picks up the result.
+  function chooseAurMode() {
+    root.spawn(["/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation",
+                "/usr/bin/bash " + root.quote(root.aurTool) + " --choose"]);
+    root.finishClose();
+    focusTerminalSoon();
+  }
+  onAurModeChanged: {
+    if (root.aurHidden && root.filterType === "aur") root.filterType = "all";
+    pruneSelection();
+    syncModelSelection();
+    rebuild();
+  }
+
   // Merge only after BOTH files have reported in at least once.
   function tryMergeCatalog() {
     if (root._userRows === null) return;
@@ -271,6 +305,7 @@ Item {
     // Pull in installed-but-uncatalogued plugins so the table is a real inventory.
     var withImports = Catalog.importInstalled(root.rows, root.statusObj);
     var reconciled = Catalog.reconcile(withImports, root.statusObj);
+    root.aurMode = Catalog.normalizeAurMode(root.statusObj.aur);
     root.rows = reconciled;
     var idsAfter = reconciled.map(function (r) { return String(r.id || ""); }).join("\u0000");
     if (reconciled.length !== countBefore || idsAfter !== idsBefore) { pruneSelection(); saveCatalog(); }
@@ -349,7 +384,8 @@ Item {
   }
   function pruneSelection() {
     var live = {};
-    for (var i = 0; i < root.rows.length; i++) live[rowKey(root.rows[i])] = true;
+    for (var i = 0; i < root.rows.length; i++)
+      if (!(root.aurHidden && root.rows[i].type === "aur")) live[rowKey(root.rows[i])] = true;
     var next = {};
     for (var k in root.selectedKeys) if (live[k]) next[k] = true;
     root.selectedKeys = next;
@@ -367,7 +403,7 @@ Item {
 
   // ── Model rebuild (filter → ListModel) ────────────────────────────────
   function filterOpts() {
-    return { type: root.filterType, query: root.query, installedOnly: root.installedOnly };
+    return { type: root.filterType, query: root.query, installedOnly: root.installedOnly, aurMode: root.aurMode };
   }
   function rebuild() {
     var vis = Catalog.filterRows(root.rows, filterOpts());
@@ -440,7 +476,7 @@ Item {
     table.ensureCursorVisible();
   }
   function cycleFilter(delta) {
-    var i = root.filterTypes.indexOf(root.filterType);
+    var i = Math.max(0, root.filterTypes.indexOf(root.filterType));
     root.filterType = root.filterTypes[(i + delta + root.filterTypes.length) % root.filterTypes.length];
   }
   function halfPage() { return Math.max(1, Math.floor(table.height / 42 / 2)); }
@@ -480,8 +516,12 @@ Item {
   function cursorRun(action) {
     var r = rowAtCursor();
     if (!r || r.busy) return;
+    if (action === "update" && r.type !== "aur") { toast("Update is for AUR rows"); return; }
+    if (r.type === "aur" && !Catalog.aurAllows(root.aurMode, action)) {
+      toast(root.aurModeLabel[root.aurMode] + " \u00b7 can't " + action); return;
+    }
     if (action === "add" && r.installed) { toast("Already installed"); return; }
-    if (action === "remove" && !r.installed) { toast("Not installed"); return; }
+    if ((action === "remove" || action === "update") && !r.installed) { toast("Not installed"); return; }
     var bad = Catalog.rowTargetError(r);
     if (bad) { toast(bad); return; }
     runRow(r, action);
@@ -491,32 +531,58 @@ Item {
     if (r && r.link) openLink(r.link);
   }
 
-  // ── Tab focus ring ─────────────────────────────────────────────────
+  // ── Keyboard sections ──────────────────────────────────────────────
   //
-  // Quickshell's platform reports tabFocusBehavior = Qt.TabFocusTextControls,
-  // so the built-in Tab chain skips every Button and just re-focuses the
-  // search field. We drive the ring ourselves: an explicit, ordered list of
-  // controls, forceActiveFocus() onto the next visible + enabled one.
-  function focusRing() {
-    var out = [refreshBtn, newBtn, closeBtn];
-    for (var i = 0; i < filterRep.count; i++) {
-      var it = filterRep.itemAt(i);
-      if (it) out.push(it);
+  // The panel is five numbered sections (see Section.qml), in the order you
+  // work: 1 search, 2 type filters, 3 the list, 4 act on the marked rows,
+  // 5 loadout-level buttons (new / refresh / AUR mode). Tab / Shift+Tab and
+  // the number keys move between sections; arrows / h j k l move within one.
+  // Quickshell's own Tab chain only visits text fields, so all of this is
+  // driven by hand with forceActiveFocus(). Close (×) sits outside the
+  // sections — Esc / q already close.
+  readonly property int searchSection: 0
+  readonly property int listSection: 2
+  function sections() { return [secSearch, secFilter, secList, secActions, secLoadout]; }
+  function sectionItems(i) {
+    var out;
+    if (i === 0) out = [searchField];
+    else if (i === 1) {
+      out = [];
+      for (var c = 0; c < filterRep.count; c++) out.push(filterRep.itemAt(c));
+      out.push(installedBtn);
     }
-    out.push(searchField, installedBtn, selectAllBtn, clearBtn, addBtn, removeBtn, table);
-    return out.filter(function (c) {
-      return c && c.visible && c.enabled !== false;
-    });
+    else if (i === 2) out = [table];
+    else if (i === 3) out = [selectAllBtn, clearBtn, addBtn, updateBtn, removeBtn];
+    else out = [newBtn, refreshBtn, aurModeBtn];
+    return out.filter(function (it) { return it && it.visible && it.enabled !== false; });
   }
-  function focusStep(dir) {
-    var ring = focusRing();
-    if (ring.length === 0) return;
+  function currentSection() {
+    var secs = sections();
+    for (var i = 0; i < secs.length; i++) if (secs[i].activeFocus) return i;
+    return root.listSection;
+  }
+  // Last item focused in each section, so coming back lands where you left.
+  property var sectionLast: ({})
+  function gotoSection(i) {
+    var n = sections().length;
+    i = ((i % n) + n) % n;
+    var items = sectionItems(i);
+    if (!items.length) return;
+    var last = root.sectionLast[i];
+    (items.indexOf(last) !== -1 ? last : items[0]).forceActiveFocus(Qt.TabFocusReason);
+  }
+  function sectionMove(delta) {
+    var sec = currentSection();
+    var items = sectionItems(sec);
+    if (!items.length) return;
     var cur = -1;
-    for (var i = 0; i < ring.length; i++)
-      if (ring[i].activeFocus) { cur = i; break; }
-    var next = cur < 0 ? (dir > 0 ? 0 : ring.length - 1)
-                       : (cur + dir + ring.length) % ring.length;
-    ring[next].forceActiveFocus(dir < 0 ? Qt.BacktabFocusReason : Qt.TabFocusReason);
+    for (var i = 0; i < items.length; i++) if (items[i].activeFocus) { cur = i; break; }
+    var next = Math.max(0, Math.min(cur + delta, items.length - 1));
+    items[next].forceActiveFocus(Qt.TabFocusReason);
+    var mem = {};
+    for (var k in root.sectionLast) mem[k] = root.sectionLast[k];
+    mem[sec] = items[next];
+    root.sectionLast = mem;
   }
 
   // ── Catalog editing (RowEditor) ──────────────────────────────────────
@@ -587,6 +653,8 @@ Item {
     var head = action === "remove"
       ? ("Removing " + n + (n === 1 ? " item" : " items") +
          " from your loadout — they stay listed so you can re-add them:")
+      : action === "update"
+      ? ("Updating " + n + " AUR " + (n === 1 ? "package" : "packages") + " (skipped if already current):")
       : ("Installing " + n + (n === 1 ? " item" : " items") + " into your loadout:");
     var out = [head, ""].concat(lines.map(function (l) { return "  " + l; })).concat([""]);
     return "printf '%s\\n' " + out.map(root.quote).join(" ");
@@ -609,22 +677,34 @@ Item {
 
   function runRow(row, action) {
     var groups = Catalog.groupByType([row]);
-    var cmd = Catalog.buildCommand(groups, action, root.quote);
+    var cmd = Catalog.buildCommand(groups, action, root.quote, root.aurMode);
     launch(cmd, keysOfGroups(groups));
   }
 
   function runBulk(action) {
+    if (root.anyBusy) { toast("Wait for the running job to finish"); return; }
     var sel = selectedRows();
-    if (sel.length === 0) { toast("Select some rows first"); return; }
+    if (sel.length === 0) { toast("Mark some rows first (space in the list)"); return; }
     var invalid = sel.filter(function (r) { return Catalog.rowTargetError(r) !== ""; }).length;
-    var groups = action === "add" ? Catalog.groupForInstall(sel) : Catalog.groupForRemove(sel);
-    var cmd = Catalog.buildCommand(groups, action, root.quote);
+    var groups = action === "add" ? Catalog.groupForInstall(sel)
+      : action === "update" ? Catalog.groupForUpdate(sel)
+      : Catalog.groupForRemove(sel);
+    // AUR rows the mode forbids are left out of the job (buildCommand drops
+    // them too); say so rather than skip them silently.
+    var blocked = 0;
+    if (!Catalog.aurAllows(root.aurMode, action)) { blocked = (groups.aur || []).length; groups.aur = []; }
+    var cmd = Catalog.buildCommand(groups, action, root.quote, root.aurMode);
+    var skipped = [];
+    if (invalid) skipped.push(invalid + (invalid === 1 ? " row" : " rows") + " skipped: invalid target");
+    if (blocked) skipped.push(blocked + " AUR " + (blocked === 1 ? "row" : "rows") + " skipped: " + root.aurModeLabel[root.aurMode]);
     if (!cmd) {
-      toast(invalid ? (invalid + (invalid === 1 ? " row" : " rows") + " skipped: invalid target")
-                    : (action === "add" ? "Everything selected is already installed" : "Nothing selected is installed"));
+      toast(skipped.length ? skipped.join(" \u00b7 ")
+        : action === "add" ? "Everything selected is already installed"
+        : action === "update" ? "No installed AUR rows selected"
+        : "Nothing selected is installed");
       return;
     }
-    if (invalid) toast(invalid + (invalid === 1 ? " row" : " rows") + " skipped: invalid target");
+    if (skipped.length) toast(skipped.join(" \u00b7 "));
     var keys = keysOfGroups(groups);
     // Add and Remove both hand off to the terminal, in this order:
     //   1. launch the terminal so the job is already on its way;
@@ -679,7 +759,7 @@ Item {
     root.helpOpen = false;
     root.pendingDeleteKey = "";
     if (root.catalogReady) { rebuild(); refreshStatus(); }
-    Qt.callLater(function () { keyCatcher.forceActiveFocus(); });
+    Qt.callLater(function () { table.forceActiveFocus(); });
   }
   function close() {
     closeTimer.stop();
@@ -741,7 +821,7 @@ Item {
       // Keep list focus after a modal closes.
       Connections {
         target: rowEditor
-        function onOpenedChanged() { if (!rowEditor.opened) Qt.callLater(function () { keyCatcher.forceActiveFocus(); }); }
+        function onOpenedChanged() { if (!rowEditor.opened) Qt.callLater(function () { table.forceActiveFocus(); }); }
       }
 
       Keys.onPressed: function (event) {
@@ -761,74 +841,95 @@ Item {
           return;
         }
 
-        // Tab / Shift+Tab step the panel's focus ring (see focusStep — the
-        // platform's own Tab chain can't reach the buttons here).
-        if (isTab) { root.focusStep(back ? -1 : 1); event.accepted = true; return; }
-
         var ctrl = (event.modifiers & Qt.ControlModifier) !== 0;
-
-        // While typing in search, Escape is the only shortcut (back to the list).
-        if (searchField.activeFocus) {
-          if (event.key === Qt.Key_Escape) { table.forceActiveFocus(); event.accepted = true; }
-          return;
-        }
-
         var shift = (event.modifiers & Qt.ShiftModifier) !== 0;
-        if (ctrl && event.key === Qt.Key_F) { searchField.forceActiveFocus(); event.accepted = true; return; }
+        var sec = root.currentSection();
+
+        // Tab / Shift+Tab: next / previous section.
+        if (isTab) { root.gotoSection(sec + (back ? -1 : 1)); event.accepted = true; return; }
+
+        // Search (section 1) types freely — digits included; its own key
+        // handler covers Tab / Esc / ⏎ / ↑↓.
+        if (searchField.activeFocus) return;
+
+        if (ctrl && event.key === Qt.Key_F) { root.gotoSection(root.searchSection); event.accepted = true; return; }
         if (ctrl && event.key === Qt.Key_A) { root.selectAllVisible(); event.accepted = true; return; }
         if (ctrl && event.key === Qt.Key_D) { root.moveCursor(root.halfPage()); event.accepted = true; return; }
         if (ctrl && event.key === Qt.Key_U) { root.moveCursor(-root.halfPage()); event.accepted = true; return; }
         if (ctrl && event.key === Qt.Key_R) { root.refreshStatus(true); event.accepted = true; return; }
         if (ctrl) return;
 
-        // A focused button takes ←/→ and ⏎/space itself; only the list and the
-        // bare panel get the table bindings for those.
-        var onButton = !table.activeFocus && !keyCatcher.activeFocus;
+        var t = event.text;
+        var k = event.key;
+
+        // 1–5: jump straight to a section.
+        if (t.length === 1 && t >= "1" && t <= String(root.sections().length)) {
+          root.gotoSection(parseInt(t, 10) - 1);
+          event.accepted = true;
+          return;
+        }
+
+        var left = k === Qt.Key_Left || t === "h";
+        var right = k === Qt.Key_Right || t === "l";
+        var up = (k === Qt.Key_Up && !shift) || t === "k";
+        var down = (k === Qt.Key_Down && !shift) || t === "j";
 
         var handled = true;
-        switch (event.key) {
-        case Qt.Key_Escape:   root.backOut(); break;
-        case Qt.Key_Down:     if (shift) root.extendSelection(1); else root.moveCursor(1); break;
-        case Qt.Key_Up:       if (shift) root.extendSelection(-1); else root.moveCursor(-1); break;
-        case Qt.Key_Left:     root.cycleFilter(-1); break;
-        case Qt.Key_Right:    root.cycleFilter(1); break;
-        case Qt.Key_Delete:   root.cursorDelete(); break;
-        case Qt.Key_PageDown: root.moveCursor(10); break;
-        case Qt.Key_PageUp:   root.moveCursor(-10); break;
-        case Qt.Key_Home:     root.setCursor(0); break;
-        case Qt.Key_End:      root.setCursor(listModel.count - 1); break;
-        case Qt.Key_Space:    if (onButton) handled = false; else root.cursorToggleSel(); break;
-        case Qt.Key_Return:
-        case Qt.Key_Enter:    if (onButton) handled = false; else root.cursorEdit(); break;
-        default:              handled = false;
+        if (sec !== root.listSection) {
+          // A button section: arrows / h j k l walk its buttons, the focused
+          // button takes ⏎ / space itself, Esc returns to the list.
+          if (left || up) root.sectionMove(-1);
+          else if (right || down) root.sectionMove(1);
+          else if (k === Qt.Key_Escape) root.gotoSection(root.listSection);
+          else handled = false;
+        } else {
+          // The list: ↑↓ j k move the row cursor, ←→ h l switch the type
+          // filter, space / ⏎ mark the row.
+          if (up) root.moveCursor(-1);
+          else if (down) root.moveCursor(1);
+          else if (left) root.cycleFilter(-1);
+          else if (right) root.cycleFilter(1);
+          else if (k === Qt.Key_Space || k === Qt.Key_Return || k === Qt.Key_Enter) root.cursorToggleSel();
+          else if (k === Qt.Key_Escape) root.backOut();
+          else handled = false;
         }
 
         if (!handled) {
-          var t = event.text;
           handled = true;
-          if (t === "j") root.moveCursor(1);
-          else if (t === "k") root.moveCursor(-1);
-          else if (t === "J") root.extendSelection(1);
+          switch (k) {
+          case Qt.Key_Down:     root.extendSelection(1); break;     // Shift+↓
+          case Qt.Key_Up:       root.extendSelection(-1); break;    // Shift+↑
+          case Qt.Key_Delete:   root.cursorDelete(); break;
+          case Qt.Key_PageDown: root.moveCursor(10); break;
+          case Qt.Key_PageUp:   root.moveCursor(-10); break;
+          case Qt.Key_Home:     root.setCursor(0); break;
+          case Qt.Key_End:      root.setCursor(listModel.count - 1); break;
+          default:              handled = false;
+          }
+        }
+
+        if (!handled) {
+          handled = true;
+          if (t === "J") root.extendSelection(1);
           else if (t === "K") root.extendSelection(-1);
-          else if (t === "h") root.cycleFilter(-1);
-          else if (t === "l") root.cycleFilter(1);
           else if (t === "e") root.cursorEdit();
           else if (t === "?") root.helpOpen = true;
           else if (t === "q") root.dismiss();
           else if (t === "g") root.setCursor(0);
           else if (t === "G") root.setCursor(listModel.count - 1);
-          else if (t === "/") searchField.forceActiveFocus();
+          else if (t === "/") root.gotoSection(root.searchSection);
           else if (t === "n") rowEditor.openFor(null);
           else if (t === "r") root.refreshStatus(true);
           else if (t === "i") root.installedOnly = !root.installedOnly;
           else if (t === "o") root.cursorOpenLink();
           else if (t === "a") root.cursorRun("add");
+          else if (t === "u") root.cursorRun("update");
+          else if (t === "U") root.runBulk("update");
+          else if (t === "m") root.chooseAurMode();
           else if (t === "d" || t === "x") root.cursorRun("remove");
           else if (t === "A") root.runBulk("add");
           else if (t === "D" || t === "X" || t === "R") root.runBulk("remove");
           else if (t === "c") root.clearSelection();
-          else if (t.length === 1 && t >= "1" && t <= "6")
-            root.filterType = root.filterTypes[parseInt(t, 10) - 1];
           else handled = false;
         }
         event.accepted = handled;
@@ -842,8 +943,8 @@ Item {
         height: parent.height * 0.84
         radius: Math.max(8, Style.cornerRadius)
         color: Color.background
-        border.width: 1
-        border.color: Util.alpha(Color.foreground, 0.14)
+        border.width: 2
+        border.color: Color.accent
         opacity: root.revealed ? 1 : 0
         scale: root.revealed ? 1 : 0.97
         Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
@@ -862,8 +963,19 @@ Item {
             width: parent.width
             spacing: Style.space(10)
 
+            // nf-md-package_variant_closed (the shell font is a Nerd Font)
+            Text {
+              id: titleIcon
+              anchors.verticalCenter: parent.verticalCenter
+              text: "\uDB80\uDFD7"
+              color: Color.accent
+              font.family: Style.font.family
+              font.pixelSize: Math.round(Style.font.iconLarge * 1.6)
+            }
+
             Column {
-              width: parent.width - headerActions.width - Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width - titleIcon.width - closeBtn.width - Style.space(10) * 2
               spacing: 2
               Text {
                 text: "LOADOUT"
@@ -884,174 +996,232 @@ Item {
               }
             }
 
-            Row {
-              id: headerActions
-              spacing: Style.space(6)
-              Button {
-                id: refreshBtn
-                iconText: "↻"
-                bordered: true
-                focusable: true
-                iconSpinning: root.scanning
-                tooltipText: "Refresh status (r)"
-                onClicked: root.refreshStatus(true)
-              }
-              Button {
-                id: newBtn
-                text: "＋ New"
-                bordered: true
-                focusable: true
-                onClicked: rowEditor.openFor(null)
-              }
-              Button {
-                id: closeBtn
-                iconText: "×"
-                bordered: true
-                focusable: true
-                tooltipText: "Close (Esc)"
-                onClicked: root.dismiss()
-              }
+            // Not a section: Esc / q close from anywhere.
+            LoadoutButton {
+              id: closeBtn
+              anchors.verticalCenter: parent.verticalCenter
+              // Labelled with the key that does the same thing.
+              text: "esc"
+              bordered: true
+              fontSize: Style.font.caption
+              tooltipText: "Close (Esc / q)"
+              onClicked: root.dismiss()
             }
           }
 
           PanelSeparator { width: parent.width }
 
-          // ── Filter bar ───────────────────────────────────────────
+          // ── Filter bar: 1 search, 2 type filters ─────────────────
           RowLayout {
             width: parent.width
             spacing: Style.space(8)
 
-            Repeater {
-              id: filterRep
-              model: [
-                { value: "all", label: "All", key: "1" },
-                { value: "pacman", label: "Programs", key: "2" },
-                { value: "aur", label: "AUR", key: "3" },
-                { value: "flatpak", label: "Flatpak", key: "4" },
-                { value: "omarchy", label: "Omarchy", key: "5" },
-                { value: "hyprland", label: "Hyprland", key: "6" }
-              ]
-              delegate: Button {
-                required property var modelData
-                text: modelData.label
-                bordered: true
-                focusable: true
-                fontSize: Style.font.caption
-                tooltipText: "Filter (" + modelData.key + ")"
-                active: root.filterType === modelData.value
-                onClicked: root.filterType = modelData.value
-              }
-            }
-
-            Item { Layout.fillWidth: true; implicitHeight: 1 }
-
-            TextField {
-              id: searchField
-              Layout.preferredWidth: Style.space(180)
-              placeholderText: "Search…  (/)"
-              text: root.query
-              onTextChanged: root.query = text
-              Keys.onPressed: function (e) {
-                // Escape drops back to the list; Tab / Shift+Tab step the ring
-                // (handled here because a focused TextField consumes the key
-                // before it can reach the panel's key catcher).
-                if (e.key === Qt.Key_Escape) {
-                  // First Esc clears the text, second leaves the field.
-                  if (searchField.text.length > 0) root.query = "";
-                  else table.forceActiveFocus();
-                  e.accepted = true;
-                } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter ||
-                           e.key === Qt.Key_Down || e.key === Qt.Key_Up) {
-                  // Jump into the filtered results, keeping the query.
-                  root.setCursor(0);
-                  table.forceActiveFocus();
-                  e.accepted = true;
-                } else if (e.key === Qt.Key_Tab || e.key === Qt.Key_Backtab) {
-                  root.focusStep((e.key === Qt.Key_Backtab || (e.modifiers & Qt.ShiftModifier)) ? -1 : 1);
-                  e.accepted = true;
+            Section {
+              id: secSearch
+              number: 1
+              Layout.fillWidth: true
+              TextField {
+                id: searchField
+                anchors.fill: parent
+                implicitWidth: Style.space(200)
+                placeholderText: "Search…  (/)"
+                text: root.query
+                onTextChanged: root.query = text
+                Keys.onPressed: function (e) {
+                  // Escape drops back to the list; Tab / Shift+Tab change section
+                  // (handled here because a focused TextField consumes the key
+                  // before it can reach the panel's key catcher).
+                  if (e.key === Qt.Key_Escape) {
+                    // First Esc clears the text, second leaves the field.
+                    if (searchField.text.length > 0) root.query = "";
+                    else root.gotoSection(root.listSection);
+                    e.accepted = true;
+                  } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter ||
+                             e.key === Qt.Key_Down || e.key === Qt.Key_Up) {
+                    // Jump into the filtered results, keeping the query.
+                    root.setCursor(0);
+                    table.forceActiveFocus();
+                    e.accepted = true;
+                  } else if (e.key === Qt.Key_Tab || e.key === Qt.Key_Backtab) {
+                    root.gotoSection(root.searchSection +
+                      ((e.key === Qt.Key_Backtab || (e.modifiers & Qt.ShiftModifier)) ? -1 : 1));
+                    e.accepted = true;
+                  }
                 }
               }
             }
-            Button {
-              id: installedBtn
-              text: "Installed only"
-              bordered: true
-              focusable: true
-              fontSize: Style.font.caption
-              active: root.installedOnly
-              onClicked: root.installedOnly = !root.installedOnly
+
+            Section {
+              id: secFilter
+              number: 2
+              Row {
+                anchors.fill: parent
+                spacing: Style.space(8)
+
+                Repeater {
+                  id: filterRep
+                  model: root.filterChips
+                  delegate: LoadoutButton {
+                    required property var modelData
+                    text: modelData.label
+                    bordered: true
+                    focusable: true
+                    fontSize: Style.font.caption
+                    active: root.filterType === modelData.value
+                    onClicked: root.filterType = modelData.value
+                  }
+                }
+                LoadoutButton {
+                  id: installedBtn
+                  text: "Installed only"
+                  bordered: true
+                  focusable: true
+                  fontSize: Style.font.caption
+                  active: root.installedOnly
+                  onClicked: root.installedOnly = !root.installedOnly
+                }
+              }
             }
           }
 
-          // ── Action bar ───────────────────────────────────────────
+          // ── Table: 3 ─────────────────────────────────────────────
+          Section {
+            id: secList
+            number: 3
+            width: parent.width
+            height: parent.height - y - secActions.height - bottomBar.height - parent.spacing * 2
+            LoadoutTable {
+              id: table
+              anchors.fill: parent
+              model: listModel
+              controller: root
+              cursorIndex: root.cursorIndex
+            }
+          }
+
+          // ── Act on the marked rows: 4 ────────────────────────────
+          Section {
+            id: secActions
+            number: 4
+            width: parent.width
+            RowLayout {
+              anchors.fill: parent
+              spacing: Style.space(8)
+
+              LoadoutButton {
+                id: selectAllBtn
+                text: "Select all"
+                bordered: true
+                focusable: true
+                fontSize: Style.font.caption
+                tooltipText: "Ctrl+A"
+                onClicked: root.selectAllVisible()
+              }
+              LoadoutButton {
+                id: clearBtn
+                text: "Clear"
+                bordered: true
+                focusable: true
+                fontSize: Style.font.caption
+                // Stays focusable so section 4's arrows can reach it; dimmed
+                // (and a no-op with a hint) until something is marked.
+                opacity: root.selectedCount > 0 ? 1 : 0.45
+                onClicked: {
+                  if (root.selectedCount === 0) root.toast("Nothing marked");
+                  else root.clearSelection();
+                }
+              }
+              Item { Layout.fillWidth: true; implicitHeight: 1 }
+              LoadoutButton {
+                id: addBtn
+                text: "Add selected"
+                bordered: true
+                focusable: true
+                accent: Color.accent
+                active: root.selectedCount > 0
+                opacity: root.bulkReady ? 1 : 0.45
+                onClicked: root.runBulk("add")
+              }
+              LoadoutButton {
+                id: updateBtn
+                text: "Update AUR"
+                bordered: true
+                focusable: true
+                visible: !root.aurHidden
+                tooltipText: "Update the selected, installed AUR rows (U)"
+                opacity: root.bulkReady ? 1 : 0.45
+                onClicked: root.runBulk("update")
+              }
+              LoadoutButton {
+                id: removeBtn
+                text: "Remove selected"
+                bordered: true
+                focusable: true
+                // Destructive — paint it with the theme's urgent colour, and fill
+                // it once rows are selected so it clearly reads as "this deletes".
+                accent: Color.urgent
+                foreground: (root.selectedCount > 0 && !root.anyBusy) ? Color.background : Color.urgent
+                background: (root.selectedCount > 0 && !root.anyBusy) ? Color.urgent : "transparent"
+                opacity: root.bulkReady ? 1 : 0.45
+                onClicked: root.runBulk("remove")
+              }
+            }
+          }
+
+          // ── 5 loadout buttons + keyboard hints ─────────────────────
           RowLayout {
+            id: bottomBar
             width: parent.width
-            spacing: Style.space(8)
+            spacing: Style.space(12)
 
-            Button {
-              id: selectAllBtn
-              text: "Select all"
-              bordered: true
-              focusable: true
-              fontSize: Style.font.caption
-              tooltipText: "Ctrl+A"
-              onClicked: root.selectAllVisible()
+            Section {
+              id: secLoadout
+              number: 5
+              Row {
+                anchors.fill: parent
+                spacing: Style.space(6)
+                LoadoutButton {
+                  id: newBtn
+                  text: "＋ New"
+                  bordered: true
+                  fontSize: Style.font.caption
+                  tooltipText: "New row (n)"
+                  onClicked: rowEditor.openFor(null)
+                }
+                LoadoutButton {
+                  id: refreshBtn
+                  iconText: "↻"
+                  text: "Refresh"
+                  bordered: true
+                  fontSize: Style.font.caption
+                  iconSize: Style.font.caption
+                  iconSpinning: root.scanning
+                  tooltipText: "Refresh status (r)"
+                  onClicked: root.refreshStatus(true)
+                }
+                LoadoutButton {
+                  id: aurModeBtn
+                  text: root.aurModeLabel[root.aurMode]
+                  bordered: true
+                  fontSize: Style.font.caption
+                  active: root.aurMode !== "enabled"
+                  tooltipText: "Set AUR mode system-wide: on / updates only / off (m)"
+                  onClicked: root.chooseAurMode()
+                }
+              }
             }
-            Button {
-              id: clearBtn
-              text: "Clear"
-              bordered: true
-              focusable: true
-              fontSize: Style.font.caption
-              enabled: root.selectedCount > 0
-              onClicked: root.clearSelection()
-            }
-            Item { Layout.fillWidth: true; implicitHeight: 1 }
-            Button {
-              id: addBtn
-              text: "Add selected"
-              bordered: true
-              focusable: true
-              accent: Color.accent
-              active: root.selectedCount > 0
-              enabled: root.selectedCount > 0 && !root.anyBusy
-              onClicked: root.runBulk("add")
-            }
-            Button {
-              id: removeBtn
-              text: "Remove selected"
-              bordered: true
-              focusable: true
-              // Destructive — paint it with the theme's urgent colour, and fill
-              // it once rows are selected so it clearly reads as "this deletes".
-              accent: Color.urgent
-              foreground: (root.selectedCount > 0 && !root.anyBusy) ? Color.background : Color.urgent
-              background: (root.selectedCount > 0 && !root.anyBusy) ? Color.urgent : "transparent"
-              enabled: root.selectedCount > 0 && !root.anyBusy
-              onClicked: root.runBulk("remove")
-            }
-          }
 
-          // ── Table ────────────────────────────────────────────────
-          LoadoutTable {
-            id: table
-            width: parent.width
-            height: parent.height - y - footer.height - Style.space(8)
-            model: listModel
-            controller: root
-            cursorIndex: root.cursorIndex
-          }
-
-          // ── Keyboard hint footer ────────────────────────────────
-          Text {
-            id: footer
-            width: parent.width
-            text: "? all shortcuts · j/k move · J/K range-select · space select · h/l filter · / search · " +
-              "a/d add/remove · A/D bulk · ⏎ edit · n new · del drop row · esc back"
-            color: Util.alpha(Color.foreground, 0.4)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
+            Text {
+              id: footer
+              Layout.fillWidth: true
+              text: "? all shortcuts · tab / 1–5 section · ←↓↑→ hjkl move · space/⏎ mark or press · " +
+                "a/d/u add/remove/update · A/D/U marked · e edit · esc back"
+              horizontalAlignment: Text.AlignRight
+              color: Util.alpha(Color.foreground, 0.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideLeft
+            }
           }
         }
 
@@ -1115,34 +1285,39 @@ Item {
               rowSpacing: Style.space(10)
               Repeater {
                 model: [
+                  { title: "Sections", keys: [
+                    ["Tab  Shift+Tab", "next / previous section"],
+                    ["1 – 5", "jump to a section (numbered on screen)"],
+                    ["← ↓ ↑ →  h j k l", "move within the section"],
+                    ["⏎  space", "press the button · in the list, mark the row"] ] },
                   { title: "Move", keys: [
                     ["j k  ↑ ↓", "row up / down"],
                     ["g G  Home End", "first / last row"],
                     ["Ctrl+D  Ctrl+U", "half page down / up"],
                     ["PgDn PgUp", "ten rows"] ] },
                   { title: "Select", keys: [
-                    ["space", "toggle the cursor row"],
+                    ["space  ⏎", "mark / unmark the cursor row"],
                     ["J K  Shift+↑↓", "extend selection"],
                     ["Ctrl+A", "select / unselect all shown"],
                     ["c", "clear selection"] ] },
                   { title: "Act", keys: [
                     ["a  d", "add / remove the cursor row"],
                     ["A  D", "add / remove selected"],
+                    ["u  U", "update the cursor / selected AUR rows"],
+                    ["m", "set AUR mode (system-wide, opens a terminal)"],
                     ["o", "open the row's link"],
                     ["r  Ctrl+R", "refresh status"] ] },
                   { title: "Edit", keys: [
-                    ["⏎  e", "edit the cursor row"],
+                    ["e  double-click", "edit the cursor row"],
                     ["n", "new row"],
                     ["Delete ×2", "drop row from loadout"],
                     ["in the editor", "Tab / ↑↓ fields, Ctrl+1–5 type, Ctrl+S save"] ] },
                   { title: "Filter", keys: [
-                    ["h l  ← →", "previous / next type"],
-                    ["1 – 6", "jump to a type tab"],
+                    ["h l  ← →", "previous / next type (in the list)"],
                     ["i", "installed only"],
                     ["/  Ctrl+F", "search (⏎ or ↓ jumps to results)"] ] },
                   { title: "Panel", keys: [
-                    ["Tab  Shift+Tab", "move between controls"],
-                    ["Esc", "back one step (search → close)"],
+                    ["Esc", "back one step (section → list → close)"],
                     ["q", "close"],
                     ["?", "this sheet"] ] }
                 ]
@@ -1208,6 +1383,9 @@ Item {
     }
   }
 
+  // Bulk buttons stay enabled (so the keyboard can land on them) and just dim
+  // until this is true; runBulk says why when pressed early.
+  readonly property bool bulkReady: selectedCount > 0 && !anyBusy
   readonly property bool anyBusy: {
     for (var i = 0; i < rows.length; i++) if (rows[i].busy) return true;
     return false;

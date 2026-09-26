@@ -1,0 +1,436 @@
+#!/usr/bin/env bash
+#
+# omarchy-aur — set AUR access system-wide on Omarchy: enabled, updates only,
+# or disabled. Shipped with jgarza.loadout, whose AUR button runs it.
+#
+#   enabled       yay/paru mode=any, aur.archlinux.org reachable
+#   updates only  as enabled, plus a pacman hook that refuses to *install* any
+#                 package not in a sync repo — AUR packages already installed
+#                 still upgrade, nothing new comes in (via yay, paru or -U)
+#   disabled      yay/paru mode=repo, aur.archlinux.org blackholed
+#
+set -euo pipefail
+
+MARKER="# omarchy-aur-toggle"
+HOSTS=/etc/hosts
+AUR_HOST="aur.archlinux.org"
+SKEL_DIR=/etc/skel/.config
+HOOK=/etc/pacman.d/hooks/00-omarchy-aur-updates-only.hook
+GUARD=/usr/local/lib/omarchy-aur/guard
+VERSION="1.2.0"
+USER=${USER:-$(id -un)}
+
+# ── style ────────────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+  B=$'\e[1m'; D=$'\e[2m'; R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; C=$'\e[36m'; X=$'\e[0m'
+else
+  B=''; D=''; R=''; G=''; Y=''; C=''; X=''
+fi
+
+TERM_COLS=$(tput cols 2>/dev/null || echo 80)
+W=$(( TERM_COLS > 66 ? 64 : TERM_COLS - 2 ))
+(( W < 40 )) && W=40
+
+vlen() {
+  local s
+  s=$(printf '%s' "$1" | sed 's/\x1b\[[0-9;]*m//g')
+  printf '%s' "$(printf '%s' "$s" | LC_ALL=C.UTF-8 wc -m)"
+}
+rep()  { local n=$1 c=$2 o=''; while (( n-- > 0 )); do o+="$c"; done; printf '%s' "$o"; }
+
+top() {
+  local title="$1" pad
+  pad=$(( W - 5 - $(vlen "$title") ))
+  (( pad < 0 )) && pad=0
+  printf '%s┌─ %s%s %s%s┐%s\n' "$D" "$X$B$title$X" "$D" "$(rep "$pad" '─')" "$D" "$X"
+}
+row() {
+  local text="${1-}" pad
+  pad=$(( W - 3 - $(vlen "$text") ))
+  (( pad < 0 )) && pad=0
+  printf '%s│%s %s%s%s│%s\n' "$D" "$X" "$text" "$(rep "$pad" ' ')" "$D" "$X"
+}
+bot() { printf '%s└%s┘%s\n' "$D" "$(rep $((W-2)) '─')" "$X"; }
+
+banner() { printf '\n%s  ▲ omarchy-aur%s %sv%s%s\n\n' "$B" "$X" "$D" "$VERSION" "$X"; }
+step()   { printf '   %s▸%s %s\n' "$C" "$X" "$1"; }
+ok()     { printf '   %s✔%s %s\n' "$G" "$X" "$1"; }
+warn()   { printf '   %s!%s %s\n' "$Y" "$X" "$1"; }
+fail()   { printf '   %s✖%s %s\n' "$R" "$X" "$1"; }
+die()    { printf '\n   %s✖ %s%s\n\n' "$R" "$1" "$X" >&2; exit 1; }
+
+confirm() {
+  [[ $ASSUME_YES == 1 ]] && return 0
+  [[ -t 0 ]] || die "not a terminal — pass --yes to run unattended"
+  local reply
+  printf '\n   %s%s%s %s[y/N]%s ' "$B" "$1" "$X" "$D" "$X"
+  read -r -n1 reply || true
+  printf '\n\n'
+  [[ $reply == [yY] ]]
+}
+
+# ── probes ───────────────────────────────────────────────────────────────────
+helpers() {
+  local h
+  for h in yay paru; do command -v "$h" >/dev/null 2>&1 && printf '%s\n' "$h"; done
+}
+
+helper_mode() {
+  local h=$1 cfg="${HOME}/.config/${h}/config.json"
+  [[ -f $cfg ]] || { printf 'any'; return; }
+  grep -oP '"mode"\s*:\s*"\K[^"]+' "$cfg" 2>/dev/null || printf 'any'
+}
+
+hosts_blocked() { grep -qF "$MARKER" "$HOSTS"; }
+hook_installed() { [[ -f $HOOK ]]; }
+
+# enabled | updates | disabled — what Loadout shows. The hosts block wins: with
+# the AUR unreachable nothing, update or install, can come from it.
+current_mode() {
+  if hosts_blocked; then printf 'disabled'
+  elif hook_installed; then printf 'updates'
+  else printf 'enabled'
+  fi
+}
+
+all_users() {
+  getent passwd | awk -F: \
+    '$3 >= 1000 && $3 < 65000 && $6 ~ /^\/home\// && $7 !~ /(nologin|false)$/ {print $1}'
+}
+
+foreign_pkgs() { pacman -Qmq 2>/dev/null || true; }
+
+require_sudo() {
+  sudo -v >/dev/null 2>&1 || die "sudo authentication failed — /etc/hosts and /etc/skel need root"
+}
+
+helper_list() { helpers | tr '\n' ' ' | sed 's/ $//'; }
+
+# ── panels ───────────────────────────────────────────────────────────────────
+status_panel() {
+  local h mode label net
+  top "status"
+  if hosts_blocked; then
+    net="${G}blocked${X}  ${D}${AUR_HOST} → 0.0.0.0${X}"
+  else
+    net="${R}open${X}     ${D}${AUR_HOST} reachable${X}"
+  fi
+  row "$(printf '%-10s %s' 'network' "$net")"
+  if hook_installed; then
+    row "$(printf '%-10s %s' 'installs' "${G}blocked${X}  ${D}updates only (pacman hook)${X}")"
+  else
+    row "$(printf '%-10s %s' 'installs' "${R}allowed${X}")"
+  fi
+  if [[ -z $(helpers) ]]; then
+    row "$(printf '%-10s %s' 'helpers' "${D}none installed${X}")"
+  else
+    for h in $(helpers); do
+      mode=$(helper_mode "$h")
+      if [[ $mode == repo ]]; then
+        label="${G}repo-only${X}"
+      else
+        label="${R}${mode}${X}  ${D}AUR allowed${X}"
+      fi
+      row "$(printf '%-10s %s' "$h" "$label")"
+    done
+  fi
+  bot
+}
+
+usage() {
+  banner
+  top "usage"
+  row "${B}omarchy-aur --enable${X}        ${D}AUR fully on${X}"
+  row "${B}omarchy-aur --updates-only${X}  ${D}update, never install${X}"
+  row "${B}omarchy-aur --disable${X}       ${D}AUR off${X}"
+  row "${B}omarchy-aur --choose${X}        ${D}pick one interactively${X}"
+  row "${B}omarchy-aur --status${X}        ${D}show current state${X}"
+  row "${B}omarchy-aur --mode${X}          ${D}print enabled|updates|disabled${X}"
+  row ""
+  row "${D}options${X}"
+  row "  --all-users   apply to every user, not just you"
+  row "  --yes  -y     skip the confirmation prompt"
+  row "  --help -h     this screen"
+  bot
+  echo
+  top "what --disable changes"
+  row "1. yay / paru  →  ${B}--mode repo${X}  ${D}(AUR ignored)${X}"
+  row "2. /etc/skel   →  same config for new accounts"
+  row "3. /etc/hosts  →  ${AUR_HOST} blackholed"
+  row ""
+  row "${D}--updates-only keeps the AUR open and adds a pacman hook:${X}"
+  row "${D}new installs of non-repo packages abort; upgrades run.${X}"
+  row ""
+  row "${D}yay stays installed, so omarchy-update keeps working.${X}"
+  row "${D}In repo mode 'yay -Syu' behaves like 'pacman -Syu'.${X}"
+  bot
+  echo
+  status_panel
+  echo
+}
+
+# ── actions ──────────────────────────────────────────────────────────────────
+set_mode() {
+  local user=$1 mode=$2 home h
+  home=$(getent passwd "$user" | cut -d: -f6)
+  [[ -d $home ]] || { warn "${user}: no home directory, skipped"; return 0; }
+
+  for h in $(helpers); do
+    if [[ $user == "$USER" ]]; then
+      if "$h" --save --mode "$mode" >/dev/null 2>&1; then
+        ok "${h} → mode=${mode} ${D}(${user})${X}"
+      else
+        warn "${h} --save --mode failed ${D}(needs yay 11+ / paru 1.10+)${X}"
+      fi
+    else
+      if sudo -u "$user" -H "$h" --save --mode "$mode" >/dev/null 2>&1; then
+        ok "${h} → mode=${mode} ${D}(${user})${X}"
+      else
+        warn "${h} --save --mode failed for ${user}"
+      fi
+    fi
+  done
+}
+
+seed_skel() {
+  local h src
+  for h in $(helpers); do
+    src="${HOME}/.config/${h}/config.json"
+    [[ -f $src ]] || continue
+    if sudo mkdir -p "${SKEL_DIR}/${h}" 2>/dev/null && sudo cp "$src" "${SKEL_DIR}/${h}/config.json" 2>/dev/null; then
+      ok "/etc/skel seeded with ${h} config"
+    else
+      warn "could not write ${SKEL_DIR}/${h} — new users unaffected"
+    fi
+  done
+}
+
+hosts_block() {
+  if hosts_blocked; then ok "hosts block already present"; return 0; fi
+  printf '0.0.0.0 %s %s\n' "$AUR_HOST" "$MARKER" | sudo tee -a "$HOSTS" >/dev/null \
+    || die "could not write ${HOSTS}"
+  ok "${AUR_HOST} blackholed in ${HOSTS}"
+}
+
+hosts_unblock() {
+  if ! hosts_blocked; then ok "no hosts block to remove"; return 0; fi
+  sudo cp "$HOSTS" "${HOSTS}.omarchy-aur.bak" || die "could not back up ${HOSTS}"
+  sudo sed -i "\|${MARKER}|d" "$HOSTS" || die "could not edit ${HOSTS}"
+  ok "hosts block removed ${D}(backup: ${HOSTS}.omarchy-aur.bak)${X}"
+}
+
+# The guard runs as root from a pacman hook, so both files are written root-owned
+# via `install` — never pointed at anything in a user-writable location.
+GUARD_SRC='#!/bin/bash
+# Installed by omarchy-aur --updates-only. Runs as root from a pacman
+# PreTransaction hook (Operation = Install: packages not yet installed, never
+# upgrades). stdin: the names of those packages. Refuses any that no sync
+# repo provides — i.e. AUR builds and other foreign packages.
+set -uo pipefail
+export PATH=/usr/bin
+targets=$(cat)
+if ! repo=$(LC_ALL=C pacman -Slq 2>/dev/null) || [[ -z $repo ]]; then
+  echo "omarchy-aur: cannot read the sync databases — refusing new installs (AUR is updates only)" >&2
+  exit 1
+fi
+blocked=$(grep -Fxv -f <(printf "%s\n" "$repo") <<<"$targets" | grep -v "^$")
+[[ -z $blocked ]] && exit 0
+echo "omarchy-aur: AUR is set to updates only — refusing to install:" >&2
+printf "  %s\n" $blocked >&2
+echo "Allow new AUR installs with: omarchy-aur --enable (or the AUR button in Loadout)" >&2
+exit 1
+'
+
+HOOK_SRC="[Trigger]
+Operation = Install
+Type = Package
+Target = *
+
+[Action]
+Description = omarchy-aur: blocking new non-repo packages (AUR is updates only)...
+When = PreTransaction
+Exec = ${GUARD}
+NeedsTargets
+AbortOnFail
+"
+
+install_root_file() {  # <mode> <dest> <content>
+  local tmp rc=0
+  tmp=$(mktemp) || die "mktemp failed"
+  printf '%s' "$3" > "$tmp"
+  sudo install -D -o root -g root -m "$1" "$tmp" "$2" || rc=$?
+  rm -f "$tmp"
+  return $rc
+}
+
+hook_install() {
+  install_root_file 755 "$GUARD" "$GUARD_SRC" || die "could not write ${GUARD}"
+  install_root_file 644 "$HOOK" "$HOOK_SRC" || die "could not write ${HOOK}"
+  ok "pacman hook installed ${D}(new non-repo installs abort)${X}"
+}
+
+hook_remove() {
+  if ! hook_installed && [[ ! -e $GUARD ]]; then ok "no updates-only hook to remove"; return 0; fi
+  sudo rm -f "$HOOK" "$GUARD" || die "could not remove the updates-only hook"
+  sudo rmdir "$(dirname "$GUARD")" 2>/dev/null || true
+  ok "updates-only hook removed"
+}
+
+run_disable() {
+  local targets=("$USER") u orphans p
+  [[ $ALL_USERS == 1 ]] && mapfile -t targets < <(all_users)
+
+  banner
+  status_panel
+  echo
+  top "plan — disable AUR"
+  row "users      ${B}${targets[*]}${X}"
+  row "helpers    $(helper_list)  →  mode=repo"
+  row "hosts      add  0.0.0.0 ${AUR_HOST}"
+  row "hook       remove updates-only hook"
+  row "skel       repo-mode config for new users"
+  bot
+
+  confirm "Disable AUR access?" || die "aborted"
+  require_sudo
+
+  step "applying"
+  for u in "${targets[@]}"; do set_mode "$u" repo; done
+  seed_skel
+  hosts_block
+  hook_remove
+
+  orphans=$(foreign_pkgs)
+  if [[ -n $orphans ]]; then
+    echo
+    top "${Y}no longer updatable${X}"
+    row "${D}installed, but in no configured repo:${X}"
+    while IFS= read -r p; do row "  ${p}"; done <<< "$orphans"
+    bot
+  fi
+
+  echo
+  status_panel
+  printf '\n   %sverify:%s yay -Ss ghostty-git   %s← should return nothing%s\n\n' "$D" "$X" "$D" "$X"
+}
+
+run_enable() {
+  local targets=("$USER") u
+  [[ $ALL_USERS == 1 ]] && mapfile -t targets < <(all_users)
+
+  banner
+  status_panel
+  echo
+  top "plan — enable AUR"
+  row "users      ${B}${targets[*]}${X}"
+  row "helpers    $(helper_list)  →  mode=any"
+  row "hosts      remove ${AUR_HOST} block"
+  row "hook       remove updates-only hook"
+  row "skel       open config for new users"
+  bot
+
+  confirm "Re-enable AUR access?" || die "aborted"
+  require_sudo
+
+  step "applying"
+  for u in "${targets[@]}"; do set_mode "$u" any; done
+  seed_skel
+  hosts_unblock
+  hook_remove
+
+  echo
+  status_panel
+  printf '\n   %sAUR is live again — review PKGBUILDs before installing.%s\n\n' "$Y" "$X"
+}
+
+run_updates_only() {
+  local targets=("$USER") u
+  [[ $ALL_USERS == 1 ]] && mapfile -t targets < <(all_users)
+
+  banner
+  status_panel
+  echo
+  top "plan — AUR updates only"
+  row "users      ${B}${targets[*]}${X}"
+  row "helpers    $(helper_list)  →  mode=any"
+  row "hosts      remove ${AUR_HOST} block"
+  row "hook       ${HOOK##*/}"
+  row "           ${D}new non-repo installs abort; upgrades run${X}"
+  row "skel       open config for new users"
+  bot
+
+  confirm "Set AUR to updates only?" || die "aborted"
+  require_sudo
+
+  step "applying"
+  for u in "${targets[@]}"; do set_mode "$u" any; done
+  seed_skel
+  hosts_unblock
+  hook_install
+
+  echo
+  status_panel
+  printf '\n   %sverify:%s yay -S <some-aur-pkg>   %s← should abort at the hook%s\n\n' "$D" "$X" "$D" "$X"
+}
+
+# Interactive picker (what Loadout's AUR button opens). The keypress is the
+# confirmation, so the chosen action runs without a second prompt.
+run_choose() {
+  local reply cur
+  [[ -t 0 ]] || die "not a terminal"
+  cur=$(current_mode)
+  banner
+  status_panel
+  echo
+  top "set AUR mode  ${D}(now: ${cur})${X}"
+  row "${B}e${X}  enabled       ${D}install + update${X}"
+  row "${B}u${X}  updates only  ${D}update what's installed, install nothing new${X}"
+  row "${B}d${X}  disabled      ${D}no AUR at all${X}"
+  row "${B}q${X}  cancel"
+  bot
+  printf '\n   %schoice%s %s[e/u/d/q]%s ' "$B" "$X" "$D" "$X"
+  read -r -n1 reply || true
+  printf '\n'
+  ASSUME_YES=1
+  case "$reply" in
+    e|E) run_enable ;;
+    u|U) run_updates_only ;;
+    d|D) run_disable ;;
+    *)   printf '\n   %scancelled%s\n\n' "$D" "$X"; return 0 ;;
+  esac
+}
+
+run_status() { banner; status_panel; echo; }
+
+# ── args ─────────────────────────────────────────────────────────────────────
+ACTION=""
+ALL_USERS=0
+ASSUME_YES=0
+
+while (( $# )); do
+  case "$1" in
+    --enable)    ACTION=enable ;;
+    --updates-only) ACTION=updates ;;
+    --disable)   ACTION=disable ;;
+    --choose)    ACTION=choose ;;
+    --status)    ACTION=status ;;
+    --mode)      ACTION=mode ;;
+    --all-users) ALL_USERS=1 ;;
+    --yes|-y)    ASSUME_YES=1 ;;
+    --help|-h)   usage; exit 0 ;;
+    *)           banner; fail "unknown option: $1"; echo; usage; exit 2 ;;
+  esac
+  shift
+done
+
+[[ -z $ACTION ]] && { usage; exit 0; }
+[[ $ACTION == mode ]] && { current_mode; echo; exit 0; }
+[[ ${EUID} -eq 0 ]] && die "run as your normal user — the script calls sudo where it needs to"
+
+case "$ACTION" in
+  disable) run_disable ;;
+  enable)  run_enable ;;
+  updates) run_updates_only ;;
+  choose)  run_choose ;;
+  status)  run_status ;;
+esac

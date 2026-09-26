@@ -12,9 +12,28 @@
 //                     The hyprpm *repo* name used by `hyprpm remove` is the URL basename.
 //
 // Reconcile adds transient fields (installed, enabled) that are never persisted.
+//
+// AUR mode (system-wide, set by bin/omarchy-aur; `status.aur`) gates every AUR action:
+//   enabled  : add / update / remove
+//   updates  : update / remove only — nothing new comes from the AUR
+//   disabled : nothing; AUR rows are hidden from the table
 
 var TYPES = ["pacman", "aur", "flatpak", "omarchy", "hyprland"];
 var PACKAGE_TYPES = ["pacman", "aur", "flatpak"];
+var AUR_MODES = ["enabled", "updates", "disabled"];
+
+function normalizeAurMode(mode) {
+  var m = String(mode || "").toLowerCase().trim();
+  return AUR_MODES.indexOf(m) === -1 ? "enabled" : m;
+}
+
+// action ∈ add | update | remove
+function aurAllows(mode, action) {
+  var m = normalizeAurMode(mode);
+  if (m === "disabled") return false;
+  if (m === "updates") return action === "update" || action === "remove";
+  return true;
+}
 
 function isUrl(s) {
   return /^(https?:\/\/|git@|git:\/\/|ssh:\/\/)/.test(String(s || "").trim());
@@ -233,6 +252,7 @@ function matchesFilter(row, opts) {
   opts = opts || {};
   var type = opts.type && opts.type !== "all" ? opts.type : null;
   if (type && row.type !== type) return false;
+  if (row.type === "aur" && normalizeAurMode(opts.aurMode) === "disabled") return false;
   if (opts.installedOnly && !row.installed) return false;
 
   var q = String(opts.query || "").toLowerCase().trim();
@@ -268,6 +288,11 @@ function groupForRemove(rows) {
   return groupByType(arr(rows).filter(function (r) { return r.installed && hasTarget(r); }));
 }
 
+// Update is AUR-only: installed AUR rows, rebuilt only when the AUR has newer.
+function groupForUpdate(rows) {
+  return groupByType(arr(rows).filter(function (r) { return r.type === "aur" && r.installed && hasTarget(r); }));
+}
+
 function shq(value) {
   return "'" + String(value == null ? "" : value).replace(/'/g, "'\\''") + "'";
 }
@@ -285,6 +310,7 @@ var BIN = {
   pkgAdd: "/usr/share/omarchy/bin/omarchy-pkg-add",
   pkgAurAdd: "/usr/share/omarchy/bin/omarchy-pkg-aur-add",
   pkgDrop: "/usr/share/omarchy/bin/omarchy-pkg-drop",
+  yay: "/usr/bin/yay",
   omarchy: "/usr/share/omarchy/bin/omarchy",
   flatpak: "/usr/bin/flatpak",
   hyprpm: "/usr/bin/hyprpm"
@@ -293,10 +319,13 @@ var BIN = {
 // Join every stage for `groups` into ONE shell string (stages chained with
 // ` && `). `quoteFn` defaults to POSIX single-quoting; the QML side passes
 // Util.shellQuote. A single `hyprpm reload -n` is appended once if any hyprland
-// stage was emitted.
-function buildCommand(groups, action, quoteFn) {
+// stage was emitted. `action` ∈ add | remove | update (update touches AUR rows
+// only). AUR rows the `aurMode` does not allow for `action` are dropped here,
+// so no caller can get past the mode.
+function buildCommand(groups, action, quoteFn, aurMode) {
   var q = typeof quoteFn === "function" ? quoteFn : shq;
   groups = groups || {};
+  var aurGroup = aurAllows(aurMode, action) ? groups.aur : [];
   var omarchy = arr(groups.omarchy);
   var hyprland = arr(groups.hyprland);
   var stages = [];
@@ -308,9 +337,15 @@ function buildCommand(groups, action, quoteFn) {
   hyprland = okRows(hyprland);
   var hyprStages = 0;
 
+  if (action === "update") {
+    var upd = collectPkgs(okRows(aurGroup), "pkg");
+    if (upd.length) stages.push(BIN.yay + " -S --aur --needed --noconfirm " + upd.map(q).join(" "));
+    return stages.join(" && ");
+  }
+
   if (action === "add") {
     var pac = collectPkgs(okRows(groups.pacman), "pkg");
-    var aur = collectPkgs(okRows(groups.aur), "pkg");
+    var aur = collectPkgs(okRows(aurGroup), "pkg");
     var fp = collectPkgs(okRows(groups.flatpak), "flatpak");
     if (pac.length) stages.push(BIN.pkgAdd + " " + pac.map(q).join(" "));
     if (aur.length) stages.push(BIN.pkgAurAdd + " " + aur.map(q).join(" "));
@@ -326,7 +361,7 @@ function buildCommand(groups, action, quoteFn) {
       hyprStages++;
     });
   } else {
-    var drop = uniq(collectPkgs(okRows(groups.pacman), "pkg").concat(collectPkgs(okRows(groups.aur), "pkg")));
+    var drop = uniq(collectPkgs(okRows(groups.pacman), "pkg").concat(collectPkgs(okRows(aurGroup), "pkg")));
     var fpDrop = collectPkgs(okRows(groups.flatpak), "flatpak");
     if (drop.length) stages.push(BIN.pkgDrop + " " + drop.map(q).join(" "));
     if (fpDrop.length) stages.push(BIN.flatpak + " uninstall -y -- " + fpDrop.map(q).join(" "));
@@ -346,8 +381,8 @@ function buildCommand(groups, action, quoteFn) {
 }
 
 // Convenience for a single row's Add / Remove button.
-function commandForRow(row, action, quoteFn) {
-  return buildCommand(groupByType([normalizeRow(row)]), action, quoteFn);
+function commandForRow(row, action, quoteFn, aurMode) {
+  return buildCommand(groupByType([normalizeRow(row)]), action, quoteFn, aurMode);
 }
 
 // Does this bulk job need root (pacman / flatpak / hyprpm)? An omarchy-only job
@@ -463,6 +498,9 @@ if (typeof module !== "undefined") {
   module.exports = {
     TYPES: TYPES,
     PACKAGE_TYPES: PACKAGE_TYPES,
+    AUR_MODES: AUR_MODES,
+    normalizeAurMode: normalizeAurMode,
+    aurAllows: aurAllows,
     isUrl: isUrl,
     repoNameFromUrl: repoNameFromUrl,
     flatpakName: flatpakName,
@@ -482,6 +520,7 @@ if (typeof module !== "undefined") {
     groupByType: groupByType,
     groupForInstall: groupForInstall,
     groupForRemove: groupForRemove,
+    groupForUpdate: groupForUpdate,
     buildCommand: buildCommand,
     commandForRow: commandForRow,
     needsTerminal: needsTerminal,

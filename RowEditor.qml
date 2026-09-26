@@ -240,7 +240,7 @@ Item {
               { value: "omarchy", label: "Omarchy" },
               { value: "hyprland", label: "Hyprland" }
             ]
-            delegate: Button {
+            delegate: LoadoutButton {
               required property var modelData
               required property int index
               text: modelData.label
@@ -306,7 +306,7 @@ Item {
         width: parent.width
         spacing: Style.space(8)
 
-        Button {
+        LoadoutButton {
           id: deleteBtn
           text: root.confirmingDelete ? "Press again to delete" : "Delete entry"
           bordered: true
@@ -321,7 +321,7 @@ Item {
 
         Item { Layout.fillWidth: true; implicitHeight: 1 }
 
-        Button {
+        LoadoutButton {
           id: cancelBtn
           text: "Cancel"
           bordered: true
@@ -329,7 +329,7 @@ Item {
           tooltipText: "Esc"
           onClicked: root.opened = false
         }
-        Button {
+        LoadoutButton {
           id: saveBtn
           text: "Save"
           tooltipText: "Enter in any field, or Ctrl+S"

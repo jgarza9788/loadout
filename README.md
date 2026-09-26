@@ -143,29 +143,76 @@ clears each row's *working* state when its install state actually changes.
 A removed row stays in the table with its status off — deleting a row entirely
 is a separate action in the row editor (double-click a row, or **＋ New**).
 
+### AUR mode
+
+AUR access is a **system-wide** setting with three states, managed by
+`bin/omarchy-aur`. The **AUR:** button in section 5 (or `m`) opens its picker
+in the floating terminal; it needs `sudo`. Loadout reads the current state back
+on every refresh, so running the script by hand shows up too.
+
+| Mode | System-wide | In Loadout |
+|---|---|---|
+| **on** (`enabled`) | yay/paru `mode=any`, AUR reachable | add · update · remove |
+| **updates only** (`updates`) | as *on*, plus a pacman hook that aborts any *new* install of a package no sync repo provides | update · remove |
+| **off** (`disabled`) | yay/paru `mode=repo`, `aur.archlinux.org` blackholed in `/etc/hosts` | nothing — AUR rows and the AUR filter tab are hidden |
+
+In *updates only*, upgrades of AUR packages you already have — including
+`omarchy update` — run as normal; `yay -S`, `paru -S` or `pacman -U` of
+something new stops at the hook. An AUR update that pulls in a brand-new AUR
+dependency is blocked too. The hook is
+`/etc/pacman.d/hooks/00-omarchy-aur-updates-only.hook`, running the root-owned
+`/usr/local/lib/omarchy-aur/guard`; switching to *on* or *off* removes both.
+
+```sh
+bin/omarchy-aur --enable | --updates-only | --disable   # [--all-users] [--yes]
+bin/omarchy-aur --choose     # interactive picker (what the button runs)
+bin/omarchy-aur --status     # human-readable
+bin/omarchy-aur --mode       # enabled | updates | disabled
+```
+
+**Update AUR** (`u` for the cursor row, `U` for the selection) runs
+`yay -S --aur --needed --noconfirm <pkgs>` on the installed AUR rows only;
+`--needed` skips anything already current. Rows the mode forbids are left out
+of a bulk job with a note in the toast.
+
 ### Keyboard
 
 Everything works without a mouse. Press `?` in the panel for this list.
 
+The panel is five numbered **sections**, each in its own box with its number
+on the border; the one you're in is drawn in the accent colour.
+
+| # | Section |
+|---|---|
+| 1 | search |
+| 2 | type filters + *Installed only* |
+| 3 | the list (where the panel opens) |
+| 4 | act on the marked rows — select all, clear, add, update, remove |
+| 5 | loadout — new row, refresh, AUR mode |
+
+They're numbered in the order you work: narrow the list, mark rows, act on
+them. The **esc** button (top right) closes it for the mouse and sits outside the sections; `Esc` / `q` close from anywhere.
+
 | | |
 |---|---|
-| `j` / `k` / `↑` `↓` | move the row cursor |
+| `Tab` / `Shift+Tab` | next / previous section (each remembers where you were) |
+| `1`–`5` | jump to a section |
+| `←` `↓` `↑` `→` / `h` `j` `k` `l` | move within the section — in the list, `↑↓` `jk` move rows and `←→` `hl` switch the type filter |
+| `⏎` / `space` | press the focused button · in the list, mark / unmark the row |
+| `Esc` | back one step: a section → the list → (clear search / pending delete) → close |
 | `g` / `G` / `Home` `End` | first / last row |
 | `Ctrl+D` / `Ctrl+U` · `PgDn` / `PgUp` | half page · ten rows |
-| `space` | select / deselect the cursor row |
-| `J` / `K` / `Shift+↑` `↓` | extend the selection while moving |
-| `Ctrl+A` · `c` | select all shown · clear selection |
-| `a` / `d` (or `x`) | add / remove the cursor row |
-| `A` / `D` | add / remove **selected** (bulk) |
-| `⏎` or `e` · `n` | edit the cursor row · new row |
+| `J` / `K` / `Shift+↑` `↓` | extend the marking while moving |
+| `Ctrl+A` · `c` | mark all shown · clear marks |
+| `a` / `d` (or `x`) / `u` | add / remove / update-AUR the cursor row |
+| `A` / `D` / `U` | add / remove / update-AUR the **marked** rows |
+| `e` (or double-click) · `n` | edit the cursor row · new row |
 | `Delete` twice | drop the cursor row from the loadout (doesn't uninstall) |
-| `h` / `l` / `←` `→` · `1`–`6` | previous / next type filter · jump to a filter |
+| `m` | set AUR mode system-wide (opens a terminal) |
 | `i` | installed only |
-| `/` or `Ctrl+F` | search; `⏎` or `↓` jumps into the results, `Esc` clears then leaves |
+| `/` or `Ctrl+F` | search (section 1); `⏎` or `↓` jumps into the results, `Esc` clears then leaves |
 | `o` · `r` / `Ctrl+R` | open the row's link · refresh status |
-| `Tab` / `Shift+Tab` | move focus between controls; `⏎` / `space` press the focused button |
-| `Esc` · `q` | back one step (sheet → pending delete → search → close) · close |
-| `?` | shortcut sheet |
+| `q` · `?` | close · shortcut sheet |
 
 In the row editor:
 
