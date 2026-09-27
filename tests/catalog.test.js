@@ -379,5 +379,25 @@ eq("disabled hides aur rows", C.filterRows(shown, { aurMode: "disabled" }).lengt
 eq("updates keeps aur rows visible", C.filterRows(shown, { aurMode: "updates" }).length, 2);
 eq("disabled + aur filter shows nothing", C.filterRows(shown, { type: "aur", aurMode: "disabled" }).length, 0);
 
+// ── toggleCommand ───────────────────────────────────────────────────────────
+const tOn = C.toggleCommand({ type: "omarchy", id: "so.den", installed: true, enabled: true });
+eq("toggle omarchy enabled -> disable", JSON.stringify(tOn.argv), JSON.stringify([B.omarchy, "plugin", "disable", "so.den"]));
+const tOff = C.toggleCommand({ type: "omarchy", id: "so.den", installed: true, enabled: false });
+eq("toggle omarchy disabled -> enable", tOff.argv[2], "enable");
+ok("toggle omarchy not installed -> error", !!C.toggleCommand({ type: "omarchy", id: "so.den", installed: false }).error);
+ok("toggle omarchy bad id -> error", !!C.toggleCommand({ type: "omarchy", id: "--yes", installed: true }).error);
+ok("toggle omarchy canDisable=false -> error", !!C.toggleCommand({ type: "omarchy", id: "a.b", installed: true, enabled: true, canDisable: false }).error);
+ok("toggle omarchy canDisable=false can still enable", !!C.toggleCommand({ type: "omarchy", id: "a.b", installed: true, enabled: false, canDisable: false }).argv);
+ok("toggle pacman row -> error", !!C.toggleCommand({ type: "pacman", ref: "x", installed: true }).error);
+eq("toggle hyprland repo -> all plugins + reload",
+  C.toggleCommand({ type: "hyprland", installed: true, enabled: true, hyprPlugins: ["p1", "p2", "$(x)"] }).cmd,
+  B.hyprpm + " disable 'p1' && " + B.hyprpm + " disable 'p2' && " + B.hyprpm + " reload -n");
+ok("toggle hyprland no names -> error", !!C.toggleCommand({ type: "hyprland", installed: true, hyprPlugins: [] }).error);
+const recH = C.reconcile([{ type: "hyprland", ref: "https://github.com/yayuuu/hyprland-scroll-overview.git" }],
+  { hyprpm: [{ repo: "hyprland-scroll-overview", plugins: [{ name: "scrolloverview", enabled: false }] }] })[0];
+eq("reconcile sets hyprPlugins", recH.hyprPlugins.join(","), "scrolloverview");
+const recO = C.reconcile([{ type: "omarchy", id: "a.b" }], { plugins: [{ id: "a.b", enabled: true, canDisable: false }] })[0];
+eq("reconcile sets canDisable", recO.canDisable, false);
+
 console.log(failed === 0 ? "\nALL PASS" : "\n" + failed + " FAILED");
 process.exit(failed === 0 ? 0 : 1);

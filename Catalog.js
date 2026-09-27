@@ -11,7 +11,8 @@
 //   hyprland        : ref = git URL ; id = hyprpm *plugin* name (for enable + status).
 //                     The hyprpm *repo* name used by `hyprpm remove` is the URL basename.
 //
-// Reconcile adds transient fields (installed, enabled) that are never persisted.
+// Reconcile adds transient fields (installed, enabled, and canDisable /
+// hyprPlugins for plugin rows) that are never persisted.
 //
 // AUR mode (system-wide, set by bin/omarchy-aur; `status.aur`) gates every AUR action:
 //   enabled  : add / update / remove
@@ -228,6 +229,7 @@ function reconcile(rows, status) {
       if (p && !r.id && p.id) r.id = String(p.id);
       r.installed = !!p;
       r.enabled = !!(p && p.enabled);
+      r.canDisable = !p || p.canDisable !== false;
     } else if (r.type === "hyprland") {
       var repo = repoNameFromUrl(r.ref) || r.id;
       var entry = hyprByRepo[repo] || null;
@@ -235,8 +237,10 @@ function reconcile(rows, status) {
       r.installed = !!entry || !!pluginMatch;
       if (entry) {
         r.enabled = arr(entry.plugins).some(function (pl) { return pl && pl.enabled; });
+        r.hyprPlugins = arr(entry.plugins).map(function (pl) { return pl && String(pl.name || ""); });
       } else {
         r.enabled = !!(pluginMatch && pluginMatch.enabled);
+        r.hyprPlugins = pluginMatch ? [r.id] : [];
       }
     } else {
       r.installed = false;
@@ -385,6 +389,31 @@ function commandForRow(row, action, quoteFn, aurMode) {
   return buildCommand(groupByType([normalizeRow(row)]), action, quoteFn, aurMode);
 }
 
+// Flip an installed plugin row between enabled and disabled. Returns
+//   { verb, id, argv } omarchy — no root needed; runs without a terminal
+//   { cmd: "..." }    hyprland — hyprpm keeps its state under /var/cache as
+//                     root, so this goes to the terminal like other hyprpm jobs
+//   { error: "..." }  nothing to run
+// A hyprpm repo can hold several plugins; they are switched together (all off
+// when any is on, otherwise all on).
+function toggleCommand(row, quoteFn) {
+  var q = typeof quoteFn === "function" ? quoteFn : shq;
+  var r = row || {};
+  if (r.type !== "omarchy" && r.type !== "hyprland") return { error: "Only plugins can be enabled / disabled" };
+  if (!r.installed) return { error: "Not installed" };
+  var verb = r.enabled ? "disable" : "enable";
+  if (r.type === "omarchy") {
+    if (!isPluginName(String(r.id || ""))) return { error: "Plugin id unknown — refresh first" };
+    if (r.enabled && r.canDisable === false) return { error: "This plugin can't be disabled" };
+    return { verb: verb, id: String(r.id), argv: [BIN.omarchy, "plugin", verb, String(r.id)] };
+  }
+  var names = uniq(arr(r.hyprPlugins).filter(isPluginName));
+  if (!names.length) return { error: "No hyprpm plugin name — refresh first" };
+  var stages = names.map(function (n) { return BIN.hyprpm + " " + verb + " " + q(n); });
+  stages.push(BIN.hyprpm + " reload -n");
+  return { cmd: stages.join(" && ") };
+}
+
 // Does this bulk job need root (pacman / flatpak / hyprpm)? An omarchy-only job
 // does not, so the caller can run it inline for live per-row status instead.
 function needsTerminal(groups) {
@@ -523,6 +552,7 @@ if (typeof module !== "undefined") {
     groupForUpdate: groupForUpdate,
     buildCommand: buildCommand,
     commandForRow: commandForRow,
+    toggleCommand: toggleCommand,
     needsTerminal: needsTerminal,
     shq: shq
   };

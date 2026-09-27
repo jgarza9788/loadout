@@ -34,10 +34,11 @@ Item {
   readonly property real wCheck: 30
   readonly property real wType: 96
   readonly property real wStatus: 110
+  readonly property real wEnabled: 72
   readonly property real wLink: 44
   readonly property real wName: 230
   readonly property real wDesc: Math.max(160,
-    width - wCheck - wName - wType - wStatus - wLink - colSpacing * 5)
+    width - wCheck - wName - wType - wStatus - wEnabled - wLink - colSpacing * 6)
   readonly property real colSpacing: 10
 
   function typeLabel(t) {
@@ -76,6 +77,7 @@ Item {
         HeaderCell { text: "Link"; cellWidth: root.wLink }
         HeaderCell { text: "Type"; cellWidth: root.wType }
         HeaderCell { text: "Status"; cellWidth: root.wStatus }
+        HeaderCell { text: "Enabled"; cellWidth: root.wEnabled }
       }
       Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: root.line }
     }
@@ -108,6 +110,7 @@ Item {
         required property bool selected
 
         readonly property bool isCursor: index === list.currentIndex
+        readonly property bool isPlugin: type === "omarchy" || type === "hyprland"
         color: isCursor ? Util.alpha(Color.accent, 0.12)
           : rowMouse.containsMouse ? Util.alpha(Color.foreground, 0.05)
           : "transparent"
@@ -223,18 +226,62 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 width: 8; height: 8; radius: 4
                 color: rowItem.busy ? "#e0af68"
-                  : rowItem.installed ? (rowItem.entryEnabled ? "#9ece6a" : "#e0af68")
+                  : rowItem.installed ? "#9ece6a"
                   : Util.alpha(Color.foreground, 0.3)
               }
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: rowItem.busy ? "working…"
-                  : rowItem.installed ? (rowItem.entryEnabled ? "installed" : "disabled")
-                  : "not installed"
+                text: rowItem.busy ? "working…" : rowItem.installed ? "installed" : "not installed"
                 color: root.subtle
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
                 elide: Text.ElideRight
+              }
+            }
+          }
+
+          // enabled — an on/off switch on installed plugin rows only; click
+          // it (or press `t`) to flip it. Blank for packages and apps.
+          Item {
+            width: root.wEnabled; height: parent.height
+            readonly property bool on: rowItem.entryEnabled
+            readonly property bool shown: rowItem.installed && rowItem.isPlugin
+            Rectangle {
+              id: track
+              visible: parent.shown
+              anchors.verticalCenter: parent.verticalCenter
+              width: 30; height: 16; radius: 8
+              color: parent.on ? "#9ece6a" : Util.alpha(Color.foreground, 0.18)
+              opacity: rowItem.busy ? 0.4 : (switchMouse.containsMouse ? 1 : 0.85)
+              Behavior on color { ColorAnimation { duration: 120 } }
+              Rectangle {
+                width: 12; height: 12; radius: 6
+                y: 2
+                x: parent.parent.on ? parent.width - width - 2 : 2
+                color: Color.background
+                Behavior on x { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+              }
+            }
+            Text {
+              anchors.left: track.right
+              anchors.leftMargin: 6
+              anchors.verticalCenter: parent.verticalCenter
+              visible: parent.shown
+              text: parent.on ? "on" : "off"
+              color: root.subtle
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+            MouseArea {
+              id: switchMouse
+              anchors.fill: parent
+              enabled: parent.shown && !rowItem.busy
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                root.forceActiveFocus();
+                root.controller.setCursor(rowItem.index);
+                root.controller.cursorToggle();
               }
             }
           }

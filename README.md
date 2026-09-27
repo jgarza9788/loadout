@@ -27,7 +27,9 @@ themed terminal.
 
 ### What gets auto-imported
 
-- every third-party Omarchy shell plugin and every hyprpm plugin
+- every third-party Omarchy shell plugin (what the running shell reports, plus
+  any `manifest.json` under `~/.config/omarchy/plugins/*/` it missed) and every
+  hyprpm plugin
 - every installed Flatpak app
 - every explicitly-installed pacman/AUR package that ships a desktop launcher —
   i.e. the GUI apps (LibreOffice, the browser, mpv, OBS, …), found via
@@ -120,10 +122,19 @@ it on open, after every job, and on **Refresh**. It runs with a cleared
 environment, a pinned `PATH`, and absolute tool paths, under a 20 s deadline
 that kills the whole process group, with its output capped at 4 MiB. The dot in the Status column:
 
-- green **installed** / **disabled** — present (disabled = an Omarchy/Hyprland
-  plugin that's installed but not enabled)
+- green **installed**
 - grey **not installed**
 - amber **working** — a job is in flight
+
+Installed Omarchy and Hyprland plugin rows also get an on/off switch in the
+**Enabled** column. Click it or press `t` to flip it. Omarchy plugins switch
+without a terminal (no root); a Hyprland plugin opens the terminal, since hyprpm
+needs `sudo`. Either way Loadout comes back on the same row, search and filter
+with the result as a toast. (Enabling or disabling an Omarchy plugin makes the
+shell rebuild every panel, so `bin/loadout-toggle` runs the change detached and
+reopens Loadout afterwards.)
+
+Loadout opens on section 1, the search field.
 
 ### Running jobs
 
@@ -196,7 +207,7 @@ them. The **esc** button (top right) closes it for the mouse and sits outside th
 | | |
 |---|---|
 | `Tab` / `Shift+Tab` | next / previous section (each remembers where you were) |
-| `1`–`5` | jump to a section |
+| `1`–`5` | jump to a section (in the search field: only while it's empty — once there's text, digits are part of the search) |
 | `←` `↓` `↑` `→` / `h` `j` `k` `l` | move within the section — in the list, `↑↓` `jk` move rows and `←→` `hl` switch the type filter |
 | `⏎` / `space` | press the focused button · in the list, mark / unmark the row |
 | `Esc` | back one step: a section → the list → (clear search / pending delete) → close |
@@ -206,6 +217,7 @@ them. The **esc** button (top right) closes it for the mouse and sits outside th
 | `Ctrl+A` · `c` | mark all shown · clear marks |
 | `a` / `d` (or `x`) / `u` | add / remove / update-AUR the cursor row |
 | `A` / `D` / `U` | add / remove / update-AUR the **marked** rows |
+| `t` | enable / disable the cursor plugin (Omarchy or Hyprland) |
 | `e` (or double-click) · `n` | edit the cursor row · new row |
 | `Delete` twice | drop the cursor row from the loadout (doesn't uninstall) |
 | `m` | set AUR mode system-wide (opens a terminal) |

@@ -34,6 +34,8 @@ Item {
     Qt.resolvedUrl("bin/loadout-catalog").toString().replace(/^file:\/\//, "")
   readonly property string aurTool:
     Qt.resolvedUrl("bin/omarchy-aur").toString().replace(/^file:\/\//, "")
+  readonly property string toggleScript:
+    Qt.resolvedUrl("bin/loadout-toggle").toString().replace(/^file:\/\//, "")
 
   // ── Trusted process launch ─────────────────────────────────────────────
   //
@@ -45,7 +47,9 @@ Item {
     HOME: root.homeDir,
     XDG_RUNTIME_DIR: Quickshell.env("XDG_RUNTIME_DIR") || "",
     WAYLAND_DISPLAY: Quickshell.env("WAYLAND_DISPLAY") || "",
-    LANG: "C.UTF-8"
+    LANG: "C.UTF-8",
+    // omarchy-shell (behind `omarchy plugin …`) refuses to run without it.
+    OMARCHY_PATH: "/usr/share/omarchy"
   })
   readonly property int statusDeadlineSec: 20
   readonly property int statusMaxBytes: 4194304
@@ -94,10 +98,11 @@ Item {
   ].filter(function (c) { return !(c.value === "aur" && root.aurHidden); })
   readonly property var filterTypes: filterChips.map(function (c) { return c.value; })
 
-  // Job tracking: keys of rows a launched command touches, and their installed
-  // state at launch time so a status refresh can clear `busy` as soon as it flips.
+  // Job tracking: keys of rows a launched command touches, and their
+  // installed / enabled state at launch time so a status refresh can clear
+  // `busy` as soon as it flips.
   property var jobKeys: []
-  property var jobInstalledAtLaunch: ({})
+  property var jobStateAtLaunch: ({})
   property int jobTicks: 0
 
   readonly property int installedCount: {
@@ -315,13 +320,13 @@ Item {
       toast("Refreshed \u00b7 " + root.installedCount + " installed");
     }
 
-    // Clear busy for job rows whose installed state has flipped since launch.
+    // Clear busy for job rows whose installed / enabled state has flipped since launch.
     if (root.jobKeys.length > 0) {
       var stillBusy = [];
       for (var i = 0; i < root.jobKeys.length; i++) {
         var k = root.jobKeys[i];
         var r = findRowByKey(k);
-        if (r && r.installed !== root.jobInstalledAtLaunch[k]) setBusy([k], false);
+        if (r && jobState(r) !== root.jobStateAtLaunch[k]) setBusy([k], false);
         else stillBusy.push(k);
       }
       root.jobKeys = stillBusy;
@@ -405,10 +410,18 @@ Item {
   function filterOpts() {
     return { type: root.filterType, query: root.query, installedOnly: root.installedOnly, aurMode: root.aurMode };
   }
+  // Row to put the cursor on once it shows up (set by a resume after a
+  // toggle; the catalog may still be loading when open() runs).
+  property string resumeCursorKey: ""
+
   function rebuild() {
     var vis = Catalog.filterRows(root.rows, filterOpts());
     var keepKey = (root.cursorIndex >= 0 && root.cursorIndex < listModel.count)
       ? listModel.get(root.cursorIndex).key : "";
+    if (root.resumeCursorKey && vis.some(function (r) { return rowKey(r) === root.resumeCursorKey; })) {
+      keepKey = root.resumeCursorKey;
+      root.resumeCursorKey = "";
+    }
     listModel.clear();
     var keepAt = 0;
     for (var i = 0; i < vis.length; i++) {
@@ -525,6 +538,41 @@ Item {
     var bad = Catalog.rowTargetError(r);
     if (bad) { toast(bad); return; }
     runRow(r, action);
+  }
+  // Enable / disable the cursor plugin; Loadout comes back afterwards on the
+  // same row, search and filter (see resumePayload / open).
+  //  - Omarchy: changing the enabled set makes the shell rebuild every panel,
+  //    tearing this one down, so bin/loadout-toggle runs detached, outlives
+  //    that, and summons Loadout back with the result as a toast.
+  //  - Hyprland: hyprpm needs sudo, so it runs in the terminal (which needs
+  //    the keyboard); on success the terminal summons Loadout back.
+  function cursorToggle() {
+    var r = rowAtCursor();
+    if (!r || r.busy) return;
+    if (r.type === "omarchy" && r.id === root.pluginId && r.enabled) {
+      toast("Can't disable Loadout from inside Loadout"); return;
+    }
+    var job = Catalog.toggleCommand(r, root.quote);
+    if (job.error) { toast(job.error); return; }
+    var payload = resumePayload(rowKey(r));
+    if (job.cmd) {
+      var verb = r.enabled ? "Disabling" : "Enabling";
+      var banner = "printf '%s\\n' " + root.quote(verb + " Hyprland plugin " + r.name + ":") + " ''";
+      var back = "/usr/share/omarchy/bin/omarchy-shell shell summon " + root.quote(root.pluginId) + " " +
+        root.quote(JSON.stringify(Object.assign({ toast: (r.enabled ? "Disabled " : "Enabled ") + r.name }, payload)));
+      launch(banner + " && " + job.cmd + " && " + back, [rowKey(r)]);
+      root.finishClose();
+      focusTerminalSoon();
+      return;
+    }
+    setBusy([rowKey(r)], true);
+    root.spawn([root.toggleScript, JSON.stringify(payload), job.verb, job.id]);
+  }
+
+  // What open() needs to put the panel back the way it was after a toggle.
+  function resumePayload(cursorKey) {
+    return { resume: { cursorKey: cursorKey, query: root.query,
+                       filterType: root.filterType, installedOnly: root.installedOnly } };
   }
   function cursorOpenLink() {
     var r = rowAtCursor();
@@ -664,16 +712,15 @@ Item {
     if (!cmd) { toast("Nothing to do"); return; }
     root.spawn(["/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation", cmd]);
     var snap = {};
-    for (var i = 0; i < keys.length; i++) {
-      var r = findRowByKey(keys[i]);
-      snap[keys[i]] = r ? r.installed === true : false;
-    }
-    root.jobInstalledAtLaunch = snap;
+    for (var i = 0; i < keys.length; i++) snap[keys[i]] = jobState(findRowByKey(keys[i]));
+    root.jobStateAtLaunch = snap;
     root.jobKeys = keys.slice();
     root.jobTicks = 0;
     setBusy(keys, true);
     refreshTimer.restart();
   }
+
+  function jobState(r) { return r ? (r.installed === true) + "/" + (r.enabled === true) : ""; }
 
   function runRow(row, action) {
     var groups = Catalog.groupByType([row]);
@@ -746,20 +793,50 @@ Item {
   function toast(t) { root.toastText = t; toastTimer.restart(); }
 
   // ── Lifecycle verbs (overlay contract) ──────────────────────────────
+  // Opens on section 1 (search). A payload from a plugin toggle
+  // ({resume: {cursorKey, query, filterType, installedOnly}, toast}) instead
+  // restores that view and lands back on the toggled row in the list.
   function open(payloadJson) {
+    var payload = {};
+    try { payload = JSON.parse(payloadJson || "{}") || {}; } catch (e) { payload = {}; }
+    var resume = (payload.resume && typeof payload.resume === "object") ? payload.resume : null;
     closeTimer.stop();
     root.closing = false;
     rowEditor.opened = false;
     root.opened = true;
     root.cursorIndex = 0;
-    root.filterType = "all";
-    root.query = "";
-    root.installedOnly = false;
+    root.filterType = (resume && root.filterTypes.indexOf(resume.filterType) !== -1) ? resume.filterType : "all";
+    root.query = resume ? String(resume.query || "") : "";
+    root.installedOnly = !!(resume && resume.installedOnly === true);
+    root.resumeCursorKey = resume ? String(resume.cursorKey || "") : "";
     root.selectedKeys = ({});
     root.helpOpen = false;
     root.pendingDeleteKey = "";
+    // Back from a toggle: the job is over (whether or not the shell rebuilt
+    // this panel), so the row shouldn't stay "working…".
+    var back = resume ? findRowByKey(root.resumeCursorKey) : null;
+    if (back && back.busy) setBusy([root.resumeCursorKey], false);
     if (root.catalogReady) { rebuild(); refreshStatus(); }
-    Qt.callLater(function () { table.forceActiveFocus(); });
+    if (typeof payload.toast === "string" && payload.toast) toast(payload.toast.slice(0, 200));
+    focusOnOpen.section = resume ? root.listSection : root.searchSection;
+    focusOnOpen.tries = 0;
+    focusOnOpen.restart();
+  }
+
+  // Land in the opening section. On a fresh open the panel's items aren't
+  // visible yet (gotoSection skips hidden ones) and the key catcher grabs
+  // focus as the window maps, so keep asking until the section really has it.
+  Timer {
+    id: focusOnOpen
+    property int section: 0
+    property int tries: 0
+    interval: 30
+    repeat: true
+    onTriggered: {
+      var items = root.sectionItems(section);
+      if (items.some(function (it) { return it.activeFocus; }) || ++tries > 20) { stop(); return; }
+      root.gotoSection(section);
+    }
   }
   function close() {
     closeTimer.stop();
@@ -922,6 +999,7 @@ Item {
           else if (t === "r") root.refreshStatus(true);
           else if (t === "i") root.installedOnly = !root.installedOnly;
           else if (t === "o") root.cursorOpenLink();
+          else if (t === "t") root.cursorToggle();
           else if (t === "a") root.cursorRun("add");
           else if (t === "u") root.cursorRun("update");
           else if (t === "U") root.runBulk("update");
@@ -1041,6 +1119,12 @@ Item {
                     // Jump into the filtered results, keeping the query.
                     root.setCursor(0);
                     table.forceActiveFocus();
+                    e.accepted = true;
+                  } else if (searchField.text.length === 0 && !(e.modifiers & (Qt.ControlModifier | Qt.AltModifier)) &&
+                             e.text.length === 1 && e.text >= "1" && e.text <= String(root.sections().length)) {
+                    // Empty field: 1–5 jump sections like everywhere else; once
+                    // there is text, digits are just part of the search.
+                    root.gotoSection(parseInt(e.text, 10) - 1);
                     e.accepted = true;
                   } else if (e.key === Qt.Key_Tab || e.key === Qt.Key_Backtab) {
                     root.gotoSection(root.searchSection +
@@ -1214,8 +1298,8 @@ Item {
             Text {
               id: footer
               Layout.fillWidth: true
-              text: "? all shortcuts · tab / 1–5 section · ←↓↑→ hjkl move · space/⏎ mark or press · " +
-                "a/d/u add/remove/update · A/D/U marked · e edit · esc back"
+              text: "? all shortcuts · tab/1–5 section · hjkl move · space mark · " +
+                "a/d/u add/remove/update · A/D/U marked · t plugin on/off · e edit · esc back"
               horizontalAlignment: Text.AlignRight
               color: Util.alpha(Color.foreground, 0.4)
               font.family: Style.font.family
@@ -1287,7 +1371,7 @@ Item {
                 model: [
                   { title: "Sections", keys: [
                     ["Tab  Shift+Tab", "next / previous section"],
-                    ["1 – 5", "jump to a section (numbered on screen)"],
+                    ["1 – 5", "jump to a section (in search: only while it's empty)"],
                     ["← ↓ ↑ →  h j k l", "move within the section"],
                     ["⏎  space", "press the button · in the list, mark the row"] ] },
                   { title: "Move", keys: [
@@ -1304,6 +1388,7 @@ Item {
                     ["a  d", "add / remove the cursor row"],
                     ["A  D", "add / remove selected"],
                     ["u  U", "update the cursor / selected AUR rows"],
+                    ["t", "enable / disable the cursor plugin"],
                     ["m", "set AUR mode (system-wide, opens a terminal)"],
                     ["o", "open the row's link"],
                     ["r  Ctrl+R", "refresh status"] ] },

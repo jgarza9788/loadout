@@ -5,7 +5,7 @@
 #     "foreign":  [pkg…],           # pacman -Qqm  (AUR / foreign)
 #     "apps":     [pkg…],           # explicit pkgs that ship a visible .desktop launcher
 #     "flatpak":  [app-id…],        # flatpak list --app --columns=application
-#     "plugins":  [ … ],            # verbatim `omarchy plugin list --json`
+#     "plugins":  [ … ],            # `omarchy plugin list --json` + manifests on disk it missed
 #     "hyprpm":   [ { "repo": name, "plugins": [ {"name","enabled"} … ] } … ],
 #     "aur":      "enabled" | "updates" | "disabled" }   # bin/omarchy-aur --mode
 #
@@ -25,6 +25,11 @@ readonly JQ=/usr/bin/jq PACMAN=/usr/bin/pacman FLATPAK=/usr/bin/flatpak HYPRPM=/
 readonly OMARCHY=/usr/share/omarchy/bin/omarchy TIMEOUT=/usr/bin/timeout
 readonly AUR_TOOL="$(/usr/bin/dirname -- "$(/usr/bin/realpath -- "${BASH_SOURCE[0]}")")/omarchy-aur"
 readonly AWK=/usr/bin/awk SED=/usr/bin/sed GREP=/usr/bin/grep SORT=/usr/bin/sort
+readonly PLUGIN_DIR="${HOME:-/nonexistent}/.config/omarchy/plugins"
+
+# The overlay runs this with a scrubbed environment; omarchy-shell (behind
+# `omarchy plugin list`) refuses to run without OMARCHY_PATH.
+export OMARCHY_PATH=/usr/share/omarchy
 
 # Bound each query: 8s, then SIGKILL 2s later.
 t() { "$TIMEOUT" -k 2 8 "$@"; }
@@ -71,6 +76,41 @@ case "$plugins" in
   \[*) : ;;
   *) plugins="[]" ;;
 esac
+
+# `omarchy plugin list` asks the running shell, so it misses anything the shell
+# didn't load (bad manifest, shell unreachable, installed by hand since it
+# started). Also read every manifest under the user plugin dir — the same walk
+# as omarchy-plugin-catalog: <dir>/*/manifest.json, dot-dirs skipped — and add
+# the ids the shell didn't report, as installed but not enabled.
+disk="[]"
+if [ -d "$PLUGIN_DIR" ]; then
+  _manifests=()
+  for m in "$PLUGIN_DIR"/*/manifest.json; do
+    [ -f "$m" ] && [ -r "$m" ] || continue
+    [ "$(/usr/bin/stat -L -c %s -- "$m" 2>/dev/null || echo 0)" -le 262144 ] || continue
+    _manifests+=("$m")
+  done
+  if ((${#_manifests[@]})); then
+    disk="$(
+      for m in "${_manifests[@]}"; do t "$JQ" -c '.' -- "$m" 2>/dev/null; done \
+        | "$JQ" -s -c '
+            map(select(type == "object" and (.id | type) == "string" and .id != "")
+              | { id,
+                  name: (if (.name | type) == "string" then .name else .id end),
+                  kinds: (if (.kinds | type) == "array" then map(select(type == "string")) else [] end) })
+            | unique_by(.id)'
+    )"
+  fi
+fi
+case "$disk" in \[*) : ;; *) disk="[]" ;; esac
+plugins="$(
+  "$JQ" -c --argjson disk "$disk" '
+    (map(.id) | map({key: ., value: true}) | from_entries) as $seen
+    | . + [ $disk[] | select($seen[.id] | not)
+            | . + { enabled: false, active: false, firstParty: (.id | startswith("omarchy.")), clonedFrom: "" } ]
+  ' <<<"$plugins" 2>/dev/null
+)"
+case "$plugins" in \[*) : ;; *) plugins="[]" ;; esac
 
 # `hyprpm list` is human-formatted and ANSI-coloured. Strip escapes, then walk:
 #   → Repository <repo> (by …):

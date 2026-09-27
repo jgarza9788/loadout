@@ -1,0 +1,39 @@
+#!/bin/bash
+# Enable / disable an Omarchy plugin for jgarza.loadout, then reopen Loadout.
+#
+#   loadout-toggle <resume-json> <enable|disable> <plugin-id>
+#
+# Changing which plugins are enabled makes the Omarchy shell rebuild every
+# panel, which tears the open Loadout down mid-toggle. So the overlay launches
+# this detached: it outlives that rebuild, runs the toggle, and summons Loadout
+# back with <resume-json> (cursor row, search, filter) plus a `toast` field
+# carrying the tool's own one-line result.
+
+set -uo pipefail
+unset IFS CDPATH BASH_ENV ENV
+export PATH=/usr/bin:/usr/share/omarchy/bin
+export OMARCHY_PATH=/usr/share/omarchy
+umask 077
+
+readonly JQ=/usr/bin/jq TIMEOUT=/usr/bin/timeout SLEEP=/usr/bin/sleep
+readonly OMARCHY=/usr/share/omarchy/bin/omarchy SHELL_IPC=/usr/share/omarchy/bin/omarchy-shell
+readonly SELF_ID=jgarza.loadout
+
+(($# == 3)) || { echo "usage: loadout-toggle <resume-json> <enable|disable> <plugin-id>" >&2; exit 64; }
+resume="$1" verb="$2" id="$3"
+case "$verb" in enable | disable) : ;; *) echo "bad verb: $verb" >&2; exit 64 ;; esac
+[[ $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "bad plugin id" >&2; exit 64; }
+"$JQ" -e 'type == "object"' >/dev/null 2>&1 <<<"$resume" || resume='{}'
+
+out="$("$TIMEOUT" -k 3 20 "$OMARCHY" plugin "$verb" "$id" 2>&1)"
+rc=$?
+msg="$(printf '%s\n' "$out" | /usr/bin/sed -n '/[^[:space:]]/{p;q}')"
+[ -n "$msg" ] || msg=$([ $rc -eq 0 ] && echo "Done" || echo "Failed (exit $rc)")
+
+payload="$("$JQ" -c --arg toast "$msg" '. + {toast: $toast}' <<<"$resume")"
+
+# Let the shell finish rebuilding its panels before asking for Loadout again;
+# summon queues the payload until the new instance has loaded.
+"$SLEEP" 0.4
+"$TIMEOUT" -k 2 8 "$SHELL_IPC" shell summon "$SELF_ID" "$payload" >/dev/null 2>&1
+exit $rc
