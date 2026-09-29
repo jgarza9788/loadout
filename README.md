@@ -210,7 +210,7 @@ them. The **esc** button (top right) closes it for the mouse and sits outside th
 | `1`–`5` | jump to a section (in the search field: only while it's empty — once there's text, digits are part of the search) |
 | `←` `↓` `↑` `→` / `h` `j` `k` `l` | move within the section — in the list, `↑↓` `jk` move rows and `←→` `hl` switch the type filter |
 | `⏎` / `space` | press the focused button · in the list, mark / unmark the row |
-| `Esc` | back one step: a section → the list → (clear search / pending delete) → close |
+| `Esc` | close Loadout, from anywhere (search, help sheet, row editor included) |
 | `g` / `G` / `Home` `End` | first / last row |
 | `Ctrl+D` / `Ctrl+U` · `PgDn` / `PgUp` | half page · ten rows |
 | `J` / `K` / `Shift+↑` `↓` | extend the marking while moving |
@@ -222,7 +222,7 @@ them. The **esc** button (top right) closes it for the mouse and sits outside th
 | `Delete` twice | drop the cursor row from the loadout (doesn't uninstall) |
 | `m` | set AUR mode system-wide (opens a terminal) |
 | `i` | installed only |
-| `/` or `Ctrl+F` | search (section 1); `⏎` or `↓` jumps into the results, `Esc` clears then leaves |
+| `/` or `Ctrl+F` | search (section 1); `⏎` or `↓` jumps into the results |
 | `o` · `r` / `Ctrl+R` | open the row's link · refresh status |
 | `q` · `?` | close · shortcut sheet |
 
@@ -234,7 +234,7 @@ In the row editor:
 | `Ctrl+1`–`5` · `←` `→` on a type | pick the type |
 | `⏎` in a field · `Ctrl+S` | save |
 | `Ctrl+Delete` twice | delete the entry |
-| `Esc` | cancel |
+| `Esc` | close Loadout (unsaved edits are dropped) |
 
 ## Files
 

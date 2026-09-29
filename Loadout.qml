@@ -515,13 +515,6 @@ Item {
           (r.installed ? " (stays installed)" : ""));
   }
 
-  // Esc peels back one layer at a time: help → pending delete → search text → close.
-  function backOut() {
-    if (root.helpOpen) { root.helpOpen = false; return; }
-    if (root.pendingDeleteKey) { root.pendingDeleteKey = ""; toast("Cancelled"); return; }
-    if (root.query) { root.query = ""; return; }
-    root.dismiss();
-  }
   function cursorEdit() {
     var r = rowAtCursor();
     if (r) editRow(r);
@@ -905,15 +898,18 @@ Item {
         var isTab = event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab;
         var back = event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) !== 0;
 
+        // Esc closes Loadout from anywhere — nothing else.
+        if (event.key === Qt.Key_Escape) { root.dismiss(); event.accepted = true; return; }
+
         // The row editor owns the keyboard (its own focus ring + shortcuts).
         if (rowEditor.opened) {
           if (rowEditor.handleKey(event)) event.accepted = true;
           return;
         }
 
-        // The shortcut sheet is modal: ? / Esc / q close it.
+        // The shortcut sheet is modal: ? / q close it.
         if (root.helpOpen) {
-          if (event.key === Qt.Key_Escape || event.text === "?" || event.text === "q") root.helpOpen = false;
+          if (event.text === "?" || event.text === "q") root.helpOpen = false;
           event.accepted = true;
           return;
         }
@@ -954,10 +950,9 @@ Item {
         var handled = true;
         if (sec !== root.listSection) {
           // A button section: arrows / h j k l walk its buttons, the focused
-          // button takes ⏎ / space itself, Esc returns to the list.
+          // button takes ⏎ / space itself.
           if (left || up) root.sectionMove(-1);
           else if (right || down) root.sectionMove(1);
-          else if (k === Qt.Key_Escape) root.gotoSection(root.listSection);
           else handled = false;
         } else {
           // The list: ↑↓ j k move the row cursor, ←→ h l switch the type
@@ -967,7 +962,6 @@ Item {
           else if (left) root.cycleFilter(-1);
           else if (right) root.cycleFilter(1);
           else if (k === Qt.Key_Space || k === Qt.Key_Return || k === Qt.Key_Enter) root.cursorToggleSel();
-          else if (k === Qt.Key_Escape) root.backOut();
           else handled = false;
         }
 
@@ -1106,13 +1100,11 @@ Item {
                 text: root.query
                 onTextChanged: root.query = text
                 Keys.onPressed: function (e) {
-                  // Escape drops back to the list; Tab / Shift+Tab change section
+                  // Escape closes Loadout; Tab / Shift+Tab change section
                   // (handled here because a focused TextField consumes the key
                   // before it can reach the panel's key catcher).
                   if (e.key === Qt.Key_Escape) {
-                    // First Esc clears the text, second leaves the field.
-                    if (searchField.text.length > 0) root.query = "";
-                    else root.gotoSection(root.listSection);
+                    root.dismiss();
                     e.accepted = true;
                   } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter ||
                              e.key === Qt.Key_Down || e.key === Qt.Key_Up) {
@@ -1299,7 +1291,7 @@ Item {
               id: footer
               Layout.fillWidth: true
               text: "? all shortcuts · tab/1–5 section · hjkl move · space mark · " +
-                "a/d/u add/remove/update · A/D/U marked · t plugin on/off · e edit · esc back"
+                "a/d/u add/remove/update · A/D/U marked · t plugin on/off · e edit · esc close"
               horizontalAlignment: Text.AlignRight
               color: Util.alpha(Color.foreground, 0.4)
               font.family: Style.font.family
@@ -1402,7 +1394,7 @@ Item {
                     ["i", "installed only"],
                     ["/  Ctrl+F", "search (⏎ or ↓ jumps to results)"] ] },
                   { title: "Panel", keys: [
-                    ["Esc", "back one step (section → list → close)"],
+                    ["Esc", "close"],
                     ["q", "close"],
                     ["?", "this sheet"] ] }
                 ]
@@ -1448,7 +1440,7 @@ Item {
             }
 
             Text {
-              text: "? or Esc to close"
+              text: "? or q to close · Esc closes Loadout"
               color: Util.alpha(Color.foreground, 0.4)
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
@@ -1464,6 +1456,7 @@ Item {
         z: 40
         onSubmitted: function (original, edited) { root.upsertRow(original, edited); opened = false; }
         onDeleted: function (original) { root.deleteRow(original); opened = false; }
+        onCloseRequested: root.dismiss()
       }
     }
   }

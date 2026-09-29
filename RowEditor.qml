@@ -19,6 +19,7 @@ Item {
 
   signal submitted(var original, var edited)
   signal deleted(var original)
+  signal closeRequested()
 
   property string fName: ""
   property string fDescription: ""
@@ -85,8 +86,7 @@ Item {
       return true;
     }
     if (e.key === Qt.Key_Escape) {
-      if (root.confirmingDelete) root.confirmingDelete = false;
-      else root.opened = false;
+      root.closeRequested();
       return true;
     }
     if (ctrl && (e.key === Qt.Key_S || e.key === Qt.Key_Return || e.key === Qt.Key_Enter)) {
@@ -326,7 +326,6 @@ Item {
           text: "Cancel"
           bordered: true
           focusable: true
-          tooltipText: "Esc"
           onClicked: root.opened = false
         }
         LoadoutButton {
@@ -344,7 +343,7 @@ Item {
 
       Text {
         width: parent.width
-        text: "tab / ↑↓ fields · ctrl+1–5 type · ⏎ or ctrl+s save · ctrl+del delete · esc cancel"
+        text: "tab / ↑↓ fields · ctrl+1–5 type · ⏎ or ctrl+s save · ctrl+del delete · esc close Loadout"
         color: Util.alpha(Color.foreground, 0.4)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
