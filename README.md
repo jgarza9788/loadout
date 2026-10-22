@@ -15,7 +15,7 @@ themed terminal.
 
 - **A loadout you own.** The table is a curated list of what you'd reinstall on a
   fresh machine, kept in your own JSON file. **Removing a row uninstalls the
-  thing but keeps the row**, so re-adding it later is one keypress.
+  thing and drops the row** — no record of removed items is kept.
 - **Bulk add / remove.** Select across types; Loadout builds a single shell
   command for the batch, hands it to a floating terminal (which shows a manifest
   of what's happening and handles the `sudo` prompt), and closes.
@@ -151,8 +151,15 @@ buttons run one row the same way but leave the window open.
 Because that terminal is fire-and-forget, Loadout then polls status for a bit and
 clears each row's *working* state when its install state actually changes.
 
-A removed row stays in the table with its status off — deleting a row entirely
-is a separate action in the row editor (double-click a row, or **＋ New**).
+Once a remove finishes, its row is dropped from the table. Deleting a row
+without uninstalling is a separate action in the row editor (double-click a
+row, or **＋ New**) or the Delete key.
+
+### Omarchy vs Community plugins
+
+The **Omarchy** tab lists the plugins bundled with Omarchy (read-only apart from
+enable / disable); the **Community** tab lists every other Omarchy shell plugin,
+which you can add, remove and edit like any other row.
 
 ### AUR mode
 

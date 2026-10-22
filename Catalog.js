@@ -255,7 +255,10 @@ function reconcile(rows, status) {
 function matchesFilter(row, opts) {
   opts = opts || {};
   var type = opts.type && opts.type !== "all" ? opts.type : null;
-  if (type && row.type !== type) return false;
+  // "omarchy" = plugins bundled with Omarchy; "community" = every other omarchy plugin.
+  if (type === "community") { if (row.type !== "omarchy" || row.builtin === true) return false; }
+  else if (type === "omarchy") { if (row.type !== "omarchy" || row.builtin !== true) return false; }
+  else if (type && row.type !== type) return false;
   if (row.type === "aur" && normalizeAurMode(opts.aurMode) === "disabled") return false;
   if (opts.installedOnly && !row.installed) return false;
 
@@ -274,6 +277,7 @@ function filterRows(rows, opts) {
 // ── grouping + command building ─────────────────────────────────────────────
 
 function hasTarget(r) {
+  if (r && r.builtin === true) return false;   // bundled plugins can't be added / removed
   if (TYPES.indexOf(r && r.type) === -1) return false;
   return rowTargetError(r) === "";
 }
@@ -439,6 +443,27 @@ function flatpakName(appId) {
 // apps, e.g. libreoffice, mpv, the browser). NOT imported: the rest of
 // `pacman -Qqe` (libraries, toolchains, base system). Matched by
 // id / ref / repo / app-id / package, so it is idempotent across refreshes.
+// Read-only rows for the plugins Omarchy ships with. Transient: never saved to
+// the catalog, rebuilt from status on every refresh.
+function builtinRows(status) {
+  var out = [];
+  arr((status || {}).plugins).forEach(function (p) {
+    if (!p || !p.id || p.firstParty !== true || !isPluginName(String(p.id))) return;
+    var kinds = p.kinds ? [].concat(p.kinds).join("/") : "";
+    var r = normalizeRow({
+      name: p.name || p.id,
+      description: kinds ? ("Omarchy " + kinds + " plugin") : "Omarchy plugin",
+      type: "omarchy", id: p.id
+    });
+    r.builtin = true;
+    r.installed = true;
+    r.enabled = !!p.enabled;
+    r.canDisable = p.canDisable !== false;
+    out.push(r);
+  });
+  return out;
+}
+
 function importInstalled(rows, status) {
   status = status || {};
   var out = arr(rows).map(normalizeRow);
@@ -543,6 +568,7 @@ if (typeof module !== "undefined") {
     mergeCatalog: mergeCatalog,
     reconcile: reconcile,
     importInstalled: importInstalled,
+    builtinRows: builtinRows,
     matchesFilter: matchesFilter,
     filterRows: filterRows,
     hasTarget: hasTarget,

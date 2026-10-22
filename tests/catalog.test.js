@@ -399,5 +399,21 @@ eq("reconcile sets hyprPlugins", recH.hyprPlugins.join(","), "scrolloverview");
 const recO = C.reconcile([{ type: "omarchy", id: "a.b" }], { plugins: [{ id: "a.b", enabled: true, canDisable: false }] })[0];
 eq("reconcile sets canDisable", recO.canDisable, false);
 
+// ── bundled vs community plugins ────────────────────────────────────────────
+const st = { plugins: [
+  { id: "omarchy.bar", name: "Bar", kinds: ["bar"], enabled: true, canDisable: false, firstParty: true },
+  { id: "vendor.nc", name: "nc", enabled: false, firstParty: false, clonedFrom: "https://x/nc.git" }
+] };
+const bi = C.builtinRows(st);
+eq("builtinRows only first-party", bi.length, 1);
+eq("builtinRows flagged", bi[0].builtin, true);
+eq("import skips builtin", C.importInstalled([], st).length, 1);
+eq("builtin has no target", C.hasTarget(bi[0]), false);
+eq("filter omarchy shows builtin", C.matchesFilter(bi[0], { type: "omarchy" }), true);
+eq("filter community hides builtin", C.matchesFilter(bi[0], { type: "community" }), false);
+const com = { name: "nc", type: "omarchy", id: "vendor.nc", ref: "https://x/nc.git" };
+eq("filter community shows community", C.matchesFilter(com, { type: "community" }), true);
+eq("filter omarchy hides community", C.matchesFilter(com, { type: "omarchy" }), false);
+
 console.log(failed === 0 ? "\nALL PASS" : "\n" + failed + " FAILED");
 process.exit(failed === 0 ? 0 : 1);

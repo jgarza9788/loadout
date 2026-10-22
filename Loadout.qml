@@ -9,7 +9,7 @@ import "Catalog.js" as Catalog
 
 // Loadout — one table for everything you install: pacman / AUR programs,
 // Omarchy shell plugins, and Hyprland plugins. The table is a catalog you own;
-// Add / Remove act in bulk and a removed row stays put so you can re-add it.
+// Add / Remove act in bulk and a removed row drops out of the table.
 //
 // Overlay lifecycle (open/close/toggle/summon/hide/dismiss + writable `opened`)
 // follows the Omarchy overlay-plugin contract, modeled on jgarza.scroll-overview.
@@ -94,6 +94,7 @@ Item {
     { value: "aur", label: "AUR" },
     { value: "flatpak", label: "Flatpak" },
     { value: "omarchy", label: "Omarchy" },
+    { value: "community", label: "Community" },
     { value: "hyprland", label: "Hyprland" }
   ].filter(function (c) { return !(c.value === "aur" && root.aurHidden); })
   readonly property var filterTypes: filterChips.map(function (c) { return c.value; })
@@ -102,6 +103,7 @@ Item {
   // installed / enabled state at launch time so a status refresh can clear
   // `busy` as soon as it flips.
   property var jobKeys: []
+  property string jobAction: ""
   property var jobStateAtLaunch: ({})
   property int jobTicks: 0
 
@@ -239,7 +241,7 @@ Item {
   }
 
   function stripRows(list) {
-    return (list || []).map(function (r) {
+    return (list || []).filter(function (r) { return r.builtin !== true; }).map(function (r) {
       return { name: r.name, description: r.description, type: r.type,
                ref: r.ref, id: r.id, link: r.link };
     });
@@ -305,13 +307,17 @@ Item {
   }
 
   function applyStatus() {
-    var countBefore = root.rows.length;
-    var idsBefore = root.rows.map(function (r) { return String(r.id || ""); }).join("\u0000");
+    var own = root.rows.filter(function (r) { return r.builtin !== true; });
+    var countBefore = own.length;
+    var idsBefore = own.map(function (r) { return String(r.id || ""); }).join("\u0000");
     // Pull in installed-but-uncatalogued plugins so the table is a real inventory.
-    var withImports = Catalog.importInstalled(root.rows, root.statusObj);
+    var withImports = Catalog.importInstalled(own, root.statusObj);
     var reconciled = Catalog.reconcile(withImports, root.statusObj);
     root.aurMode = Catalog.normalizeAurMode(root.statusObj.aur);
-    root.rows = reconciled;
+    var taken = {};
+    reconciled.forEach(function (r) { taken[rowKey(r)] = true; });
+    var builtins = Catalog.builtinRows(root.statusObj).filter(function (r) { return !taken[rowKey(r)]; });
+    root.rows = reconciled.concat(builtins);
     var idsAfter = reconciled.map(function (r) { return String(r.id || ""); }).join("\u0000");
     if (reconciled.length !== countBefore || idsAfter !== idsBefore) { pruneSelection(); saveCatalog(); }
 
@@ -326,7 +332,11 @@ Item {
       for (var i = 0; i < root.jobKeys.length; i++) {
         var k = root.jobKeys[i];
         var r = findRowByKey(k);
-        if (r && jobState(r) !== root.jobStateAtLaunch[k]) setBusy([k], false);
+        if (r && jobState(r) !== root.jobStateAtLaunch[k]) {
+          // A finished remove drops the row from the catalog instead of leaving it off.
+          if (root.jobAction === "remove" && !r.installed) deleteRow(r);
+          else setBusy([k], false);
+        }
         else stillBusy.push(k);
       }
       root.jobKeys = stillBusy;
@@ -522,6 +532,7 @@ Item {
   function cursorRun(action) {
     var r = rowAtCursor();
     if (!r || r.busy) return;
+    if (r.builtin) { toast("Bundled with Omarchy \u00b7 can't " + action); return; }
     if (action === "update" && r.type !== "aur") { toast("Update is for AUR rows"); return; }
     if (r.type === "aur" && !Catalog.aurAllows(root.aurMode, action)) {
       toast(root.aurModeLabel[root.aurMode] + " \u00b7 can't " + action); return;
@@ -693,7 +704,7 @@ Item {
     var n = lines.length;
     var head = action === "remove"
       ? ("Removing " + n + (n === 1 ? " item" : " items") +
-         " from your loadout — they stay listed so you can re-add them:")
+         " from your loadout:")
       : action === "update"
       ? ("Updating " + n + " AUR " + (n === 1 ? "package" : "packages") + " (skipped if already current):")
       : ("Installing " + n + (n === 1 ? " item" : " items") + " into your loadout:");
@@ -701,13 +712,14 @@ Item {
     return "printf '%s\\n' " + out.map(root.quote).join(" ");
   }
 
-  function launch(cmd, keys) {
+  function launch(cmd, keys, action) {
     if (!cmd) { toast("Nothing to do"); return; }
     root.spawn(["/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation", cmd]);
     var snap = {};
     for (var i = 0; i < keys.length; i++) snap[keys[i]] = jobState(findRowByKey(keys[i]));
     root.jobStateAtLaunch = snap;
     root.jobKeys = keys.slice();
+    root.jobAction = action || "";
     root.jobTicks = 0;
     setBusy(keys, true);
     refreshTimer.restart();
@@ -718,7 +730,7 @@ Item {
   function runRow(row, action) {
     var groups = Catalog.groupByType([row]);
     var cmd = Catalog.buildCommand(groups, action, root.quote, root.aurMode);
-    launch(cmd, keysOfGroups(groups));
+    launch(cmd, keysOfGroups(groups), action);
   }
 
   function runBulk(action) {
@@ -755,7 +767,7 @@ Item {
     // Both print an itemized manifest ahead of the command; remove additionally
     // stops at the sudo prompt.
     var full = jobBanner(groups, action) + " && " + cmd;
-    launch(full, keys);
+    launch(full, keys, action);
     root.finishClose();
     focusTerminalSoon();
   }
