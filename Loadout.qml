@@ -605,7 +605,7 @@ Item {
     }
     else if (i === 2) out = [table];
     else if (i === 3) out = [selectAllBtn, clearBtn, addBtn, updateBtn, removeBtn];
-    else out = [newBtn, refreshBtn, aurModeBtn];
+    else out = [newBtn, refreshBtn, clearUninstalledBtn, aurModeBtn];
     return out.filter(function (it) { return it && it.visible && it.enabled !== false; });
   }
   function currentSection() {
@@ -662,6 +662,30 @@ Item {
     pruneSelection();
     saveCatalog();
     rebuild();
+  }
+  // Bulk-drop catalog rows for things that are no longer installed. Two-step
+  // so a stray click can't wipe the list; never uninstalls anything.
+  readonly property int uninstalledCount: Catalog.uninstalledRows(root.rows).length
+  property bool pendingClear: false
+  Timer { id: clearConfirmTimer; interval: 3000; onTriggered: root.pendingClear = false }
+  function clearUninstalled() {
+    var drop = Catalog.uninstalledRows(root.rows);
+    if (!drop.length) return;
+    if (!root.pendingClear) {
+      root.pendingClear = true;
+      clearConfirmTimer.restart();
+      toast("Click again to drop " + drop.length + " uninstalled " + (drop.length === 1 ? "row" : "rows"));
+      return;
+    }
+    root.pendingClear = false;
+    clearConfirmTimer.stop();
+    var keys = {};
+    drop.forEach(function (r) { keys[rowKey(r)] = true; });
+    root.rows = root.rows.filter(function (r) { return !keys[rowKey(r)]; });
+    pruneSelection();
+    saveCatalog();
+    rebuild();
+    toast("Cleared " + drop.length + " uninstalled " + (drop.length === 1 ? "row" : "rows"));
   }
   function editRow(obj) { rowEditor.openFor(obj); }
 
@@ -1286,6 +1310,16 @@ Item {
                   iconSpinning: root.scanning
                   tooltipText: "Refresh status (r)"
                   onClicked: root.refreshStatus(true)
+                }
+                LoadoutButton {
+                  id: clearUninstalledBtn
+                  text: root.pendingClear ? "Sure?" : "Clear uninstalled (" + root.uninstalledCount + ")"
+                  bordered: true
+                  fontSize: Style.font.caption
+                  enabled: root.uninstalledCount > 0
+                  active: root.pendingClear
+                  tooltipText: "Drop rows for items that are no longer installed (nothing is uninstalled)"
+                  onClicked: root.clearUninstalled()
                 }
                 LoadoutButton {
                   id: aurModeBtn

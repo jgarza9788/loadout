@@ -415,21 +415,15 @@ const com = { name: "nc", type: "omarchy", id: "vendor.nc", ref: "https://x/nc.g
 eq("filter community shows community", C.matchesFilter(com, { type: "community" }), true);
 eq("filter omarchy hides community", C.matchesFilter(com, { type: "omarchy" }), false);
 
-// ── bundled vs community plugins ────────────────────────────────────────────
-const st = { plugins: [
-  { id: "omarchy.bar", name: "Bar", kinds: ["bar"], enabled: true, canDisable: false, firstParty: true },
-  { id: "vendor.nc", name: "nc", enabled: false, firstParty: false, clonedFrom: "https://x/nc.git" }
-] };
-const bi = C.builtinRows(st);
-eq("builtinRows only first-party", bi.length, 1);
-eq("builtinRows flagged", bi[0].builtin, true);
-eq("builtin not importable as catalog row", C.importInstalled([], st).length, 1);
-eq("builtin has no target", C.hasTarget(bi[0]), false);
-eq("filter omarchy shows builtin", C.matchesFilter(bi[0], { type: "omarchy" }), true);
-eq("filter community hides builtin", C.matchesFilter(bi[0], { type: "community" }), false);
-const com = { name: "nc", type: "omarchy", id: "vendor.nc", ref: "https://x/nc.git" };
-eq("filter community shows community", C.matchesFilter(com, { type: "community" }), true);
-eq("filter omarchy hides community", C.matchesFilter(com, { type: "omarchy" }), false);
+
+// ── uninstalledRows ─────────────────────────────────────────────────────────
+const ur = C.uninstalledRows([
+  { name: "a", installed: true }, { name: "b", installed: false },
+  { name: "c", builtin: true, installed: false }, { name: "d" }
+]);
+eq("uninstalledRows picks non-installed non-builtin", ur.map(function (r) { return r.name; }).join(","), "b,d");
+eq("uninstalledRows empty", C.uninstalledRows([]).length, 0);
+eq("uninstalledRows non-array", C.uninstalledRows(null).length, 0);
 
 console.log(failed === 0 ? "\nALL PASS" : "\n" + failed + " FAILED");
 process.exit(failed === 0 ? 0 : 1);

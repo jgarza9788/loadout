@@ -548,6 +548,11 @@ function importInstalled(rows, status) {
   return out;
 }
 
+// User-catalog rows that are no longer installed (bundled rows excluded).
+function uninstalledRows(rows) {
+  return arr(rows).filter(function (r) { return r && r.builtin !== true && !r.installed; });
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     TYPES: TYPES,
@@ -572,6 +577,7 @@ if (typeof module !== "undefined") {
     matchesFilter: matchesFilter,
     filterRows: filterRows,
     hasTarget: hasTarget,
+    uninstalledRows: uninstalledRows,
     groupByType: groupByType,
     groupForInstall: groupForInstall,
     groupForRemove: groupForRemove,

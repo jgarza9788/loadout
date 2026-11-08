@@ -15,7 +15,9 @@ themed terminal.
 
 - **A loadout you own.** The table is a curated list of what you'd reinstall on a
   fresh machine, kept in your own JSON file. **Removing a row uninstalls the
-  thing and drops the row** — no record of removed items is kept.
+  thing and drops the row** — no record of removed items is kept. Rows for
+  things that are no longer installed can be bulk-dropped with **Clear
+  uninstalled** (it never uninstalls anything).
 - **Bulk add / remove.** Select across types; Loadout builds a single shell
   command for the batch, hands it to a floating terminal (which shows a manifest
   of what's happening and handles the `sudo` prompt), and closes.
