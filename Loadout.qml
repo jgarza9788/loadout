@@ -1133,6 +1133,7 @@ Item {
                 anchors.fill: parent
                 implicitWidth: Style.space(200)
                 placeholderText: "Search…  (/)"
+                maximumLength: 256
                 text: root.query
                 onTextChanged: root.query = text
                 Keys.onPressed: function (e) {
@@ -1361,6 +1362,7 @@ Item {
             id: toastLabel
             anchors.centerIn: parent
             text: root.toastText
+            textFormat: Text.PlainText
             color: Color.background
             font.family: Style.font.family
             font.pixelSize: Style.font.caption

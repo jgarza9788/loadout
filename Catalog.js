@@ -143,6 +143,9 @@ function normalizeRow(raw) {
   var link = String(raw.link || "").trim();
   if (!link && isUrl(ref)) link = ref;
 
+  name = name.slice(0, 128);
+  description = description.slice(0, 512);
+
   return { name: name, description: description, type: type, ref: ref, id: id, link: link };
 }
 

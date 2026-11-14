@@ -305,6 +305,7 @@ Item {
 
   // ── Small helpers ────────────────────────────────────────────────
   component HeaderCell: Text {
+    textFormat: Text.PlainText
     property real cellWidth: 80
     width: cellWidth
     text: ""
@@ -319,6 +320,7 @@ Item {
   }
 
   component CellText: Text {
+    textFormat: Text.PlainText
     property real cellWidth: 80
     property bool bold: false
     width: cellWidth

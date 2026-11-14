@@ -29,6 +29,16 @@ eq("normalize lowercases type", n2.type, "omarchy");
 eq("normalize derives link from url ref", n2.link, "https://x/y.git");
 const n3 = C.normalizeRow({ type: "bogus", ref: "z" });
 eq("normalize unknown type -> pacman", n3.type, "pacman");
+const n4 = C.normalizeRow({ name: "<img src=http://x/>" + "n".repeat(500), description: "d".repeat(2000), ref: "z" });
+eq("normalize caps name", n4.name.length, 128);
+eq("normalize caps description", n4.description.length, 512);
+ok("normalize keeps markup text unchanged", n4.name.indexOf("<img src=http://x/>") === 0);
+
+// Every Text in the table must declare a textFormat (no AutoText rich-text fetches).
+const fs = require("fs");
+const qml = fs.readFileSync(__dirname + "/../LoadoutTable.qml", "utf8");
+ok("CellText is PlainText", /component CellText: Text \{\s*textFormat: Text\.PlainText/.test(qml));
+ok("HeaderCell is PlainText", /component HeaderCell: Text \{\s*textFormat: Text\.PlainText/.test(qml));
 
 // ── mergeCatalog ────────────────────────────────────────────────────────────
 const user = [{ name: "Mine", type: "pacman", ref: "ripgrep", description: "edited" }];

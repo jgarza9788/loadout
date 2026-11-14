@@ -207,6 +207,7 @@ Item {
         TextField {
           id: nameField
           width: parent.width
+          maximumLength: 128
           text: root.fName
           onTextChanged: root.fName = text
           onAccepted: root.trySave()
@@ -219,6 +220,7 @@ Item {
         TextField {
           id: descField
           width: parent.width
+          maximumLength: 512
           text: root.fDescription
           onTextChanged: root.fDescription = text
           onAccepted: root.trySave()
@@ -260,6 +262,7 @@ Item {
         TextField {
           id: refField
           width: parent.width
+          maximumLength: 512
           text: root.fRef
           onTextChanged: root.fRef = text
           onAccepted: root.trySave()
@@ -273,6 +276,7 @@ Item {
         TextField {
           id: idField
           width: parent.width
+          maximumLength: 128
           text: root.fId
           onTextChanged: root.fId = text
           onAccepted: root.trySave()
@@ -284,6 +288,7 @@ Item {
         width: parent.width
         visible: root.fRef.trim().length > 0 && root.targetError !== ""
         text: root.targetError
+        textFormat: Text.PlainText
         color: Color.urgent
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -295,6 +300,7 @@ Item {
         TextField {
           id: linkField
           width: parent.width
+          maximumLength: 512
           text: root.fLink
           onTextChanged: root.fLink = text
           onAccepted: root.trySave()
