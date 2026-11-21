@@ -76,7 +76,7 @@ Item {
   }
 
   // All editor keys. Returns true when handled. Called from each field's own
-  // Keys handler (a focused TextField would otherwise swallow Tab) and from the
+  // Keys handler (a focused text field would otherwise swallow Tab) and from the
   // panel's key catcher for keys that bubble up from buttons.
   function handleKey(e) {
     var ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
@@ -164,7 +164,7 @@ Item {
   }
   function trySave() { if (root.canSave) root.submitted(root.original, root.collect()); }
 
-  // Field-level key hook: every TextField routes through handleKey first.
+  // Field-level key hook: every text field routes through handleKey first.
   function fieldKeys(e) { if (root.handleKey(e)) e.accepted = true; }
 
   // Scrim
@@ -204,7 +204,7 @@ Item {
 
       Field {
         label: "Name"
-        TextField {
+        SafeField {
           id: nameField
           width: parent.width
           maximumLength: 128
@@ -217,7 +217,7 @@ Item {
 
       Field {
         label: "Description"
-        TextField {
+        SafeField {
           id: descField
           width: parent.width
           maximumLength: 512
@@ -259,7 +259,7 @@ Item {
 
       Field {
         label: root.refLabel
-        TextField {
+        SafeField {
           id: refField
           width: parent.width
           maximumLength: 512
@@ -273,7 +273,7 @@ Item {
       Field {
         label: root.idLabel
         visible: !root.isPackages
-        TextField {
+        SafeField {
           id: idField
           width: parent.width
           maximumLength: 128
@@ -297,7 +297,7 @@ Item {
 
       Field {
         label: "Link (homepage — defaults to the URL above)"
-        TextField {
+        SafeField {
           id: linkField
           width: parent.width
           maximumLength: 512

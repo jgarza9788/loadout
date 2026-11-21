@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jgarza.loadout",
   "name": "Loadout",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "jgarza",
   "license": "MIT",
   "description": "One table for everything you install: pacman and AUR programs, Omarchy shell plugins, and Hyprland plugins. Curate a loadout you own, then add or remove rows in bulk. Removing uninstalls and drops the row; \"Clear uninstalled\" bulk-drops rows for anything no longer installed.",

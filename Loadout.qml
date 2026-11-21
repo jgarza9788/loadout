@@ -1128,7 +1128,7 @@ Item {
               id: secSearch
               number: 1
               Layout.fillWidth: true
-              TextField {
+              SafeField {
                 id: searchField
                 anchors.fill: parent
                 implicitWidth: Style.space(200)
@@ -1138,7 +1138,7 @@ Item {
                 onTextChanged: root.query = text
                 Keys.onPressed: function (e) {
                   // Escape closes Loadout; Tab / Shift+Tab change section
-                  // (handled here because a focused TextField consumes the key
+                  // (handled here because a focused text field consumes the key
                   // before it can reach the panel's key catcher).
                   if (e.key === Qt.Key_Escape) {
                     root.dismiss();
